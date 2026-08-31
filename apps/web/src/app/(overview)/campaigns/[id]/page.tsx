@@ -13,6 +13,7 @@ import {
   Edit,
   ShieldCheck,
   Globe,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -68,7 +69,8 @@ const detectLanguage = (text: string): string => {
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [activeTab, setActiveTab] = useState("overview");
-  const [showClaimForm, setShowClaimForm] = useState(false);
+  const [showInsuranceModal, setShowInsuranceModal] = useState(false);
+  const [claimSubmitted, setClaimSubmitted] = useState(false);
 
   // Mock campaign record data
   const campaign = {
@@ -113,6 +115,14 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
               <Edit className="mr-1.5 h-3.5 w-3.5" /> Edit Campaign
             </Button>
           </Link>
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-amber-600/40 text-amber-300 hover:bg-amber-950/40 text-xs"
+            onClick={() => setShowInsuranceModal(true)}
+          >
+            <AlertTriangle className="mr-1.5 h-3.5 w-3.5" /> Submit Insurance Claim
+          </Button>
         </div>
       </div>
 
@@ -182,42 +192,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             <Button className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 font-bold text-white hover:from-emerald-700 hover:to-teal-700 shadow-md">
               <Heart className="mr-2 h-4 w-4 fill-white" /> Sponsor This Campaign
             </Button>
-            <Button
-              variant="outline"
-              className="w-full border-purple-600/40 text-purple-300 hover:bg-purple-950/40 text-xs font-semibold"
-              onClick={() => setShowClaimForm(prev => !prev)}
-            >
-              {showClaimForm ? "Cancel Claim" : "Submit Proof of Failure"}
-            </Button>
           </div>
         </div>
-
-        {showClaimForm && (
-          <div className="mt-4 rounded-xl border border-purple-800/40 bg-purple-950/20 p-5">
-            <h3 className="text-sm font-bold text-purple-200 mb-3">Submit Proof of Failure</h3>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                alert("Insurance claim submitted successfully! Our team will review your evidence.");
-                setShowClaimForm(false);
-              }}
-              className="space-y-4"
-            >
-              <textarea
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 p-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
-                rows={4}
-                placeholder="Describe how the campaign failed to meet its goals and provide evidence..."
-                required
-              />
-              <div className="flex items-center gap-3">
-                <Button type="submit" className="bg-purple-600 text-white hover:bg-purple-700 text-xs font-bold">
-                  Submit Evidence for Payout
-                </Button>
-                <span className="text-[11px] text-zinc-500">Max 500 words</span>
-              </div>
-            </form>
-          </div>
-        )}
       </div>
 
       {/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722) */}
@@ -293,6 +269,60 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           <CampaignCollaboration campaignId={campaign.id} campaignTitle={campaign.title} />
         </TabsContent>
       </Tabs>
+      {showInsuranceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-amber-400 flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5" /> Campaign Insurance Claim
+              </h3>
+              <button
+                type="button"
+                onClick={() => { setShowInsuranceModal(false); setClaimSubmitted(false); }}
+                className="text-xs font-semibold text-zinc-400 hover:text-zinc-200"
+              >
+                Close
+              </button>
+            </div>
+            {claimSubmitted ? (
+              <p className="mt-4 text-sm text-emerald-400">Claim submitted successfully.</p>
+            ) : (
+              <form
+                className="mt-4 space-y-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setClaimSubmitted(true);
+                }}
+              >
+                <textarea
+                  required
+                  rows={4}
+                  placeholder="Describe how the campaign failed and upload proof below"
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                />
+                <input
+                  required
+                  type="file"
+                  className="w-full text-sm text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-amber-500/20 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-amber-300 hover:file:bg-amber-500/30"
+                />
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setShowInsuranceModal(false); setClaimSubmitted(false); }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm" className="bg-amber-600 text-white hover:bg-amber-700">
+                    Submit Claim
+                  </Button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
