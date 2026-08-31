@@ -31,28 +31,6 @@ export interface StatusHistoryEntry {
   reason?: string;
 }
 
-export type CampaignInsuranceClaimStatus = "PENDING" | "APPROVED" | "REJECTED";
-
-export interface CampaignInsuranceClaimInput {
-  description: string;
-  evidence: string[];
-  payoutAmount?: string;
-}
-
-export interface CampaignInsuranceClaim {
-  id: string;
-  campaignId: string;
-  status: CampaignInsuranceClaimStatus;
-  submittedAt: number;
-  submittedBy: string;
-  description: string;
-  evidence: string[];
-  payoutAmount?: string;
-  reviewedAt?: number;
-  reviewedBy?: string;
-  reviewReason?: string;
-}
-
 export type CampaignVerificationStatus = "verified" | "partial" | "unverified";
 export type CampaignRiskLevel = "low" | "moderate" | "high" | "critical";
 export type CampaignHealthLevel = "excellent" | "good" | "fair" | "poor";
@@ -87,6 +65,33 @@ export interface CampaignHealthAssessment {
   score: number;
   level: CampaignHealthLevel;
   breakdown: CampaignHealthBreakdown;
+}
+
+export type CampaignInsuranceClaimStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+export interface CampaignInsuranceEvidence {
+  type: "image" | "document" | "link";
+  url: string;
+  description?: string;
+}
+
+export interface CampaignInsuranceClaim {
+  id: string;
+  campaignId: string;
+  submittedBy: string;
+  submittedAt: number;
+  reason: string;
+  evidence: CampaignInsuranceEvidence[];
+  status: CampaignInsuranceClaimStatus;
+  reviewedBy?: string;
+  reviewedAt?: number;
+  reviewReason?: string;
+  payoutAmount?: string;
+}
+
+export interface CampaignInsuranceClaimInput {
+  reason: string;
+  evidence: CampaignInsuranceEvidence[];
 }
 
 export interface CampaignRecord {
@@ -513,38 +518,39 @@ export async function transitionCampaignStatus(
 }
 
 export async function submitCampaignInsuranceClaim(
-  campaign: CampaignRecord,
+  campaignId: string,
   input: CampaignInsuranceClaimInput,
-  changedBy: string,
+  submittedBy: string,
   dataSource = getCampaignDataSource(),
   now = Date.now(),
 ): Promise<CampaignRecord> {
-  if (campaign.status !== "FAILED") {
-    throw new Error("Insurance claims can only be submitted for failed campaigns");
-  }
-  if (campaign.insuranceClaim?.status === "PENDING" || campaign.insuranceClaim?.status === "APPROVED") {
-    throw new Error("An insurance claim has already been submitted for this campaign");
-  }
+  const campaign = await getCampaign(campaignId, dataSource);
+  if (!campaign) throw new Error("Campaign not found");
+  if (campaign.status !== "FAILED") throw new Error("Only failed campaigns can submit insurance claims");
+  if (campaign.creator !== submittedBy) throw new Error("Only the campaign creator can submit an insurance claim");
+  if (campaign.insuranceClaim) throw new Error("Insurance claim already submitted for this campaign");
+  if (!input.reason || !input.reason.trim()) throw new Error("Insurance claim reason is required");
+  if (!input.evidence?.length) throw new Error("At least one proof of failure is required");
+
   const claim: CampaignInsuranceClaim = {
-    id: `${campaign.id}:${now}`,
+    id: `${campaign.id}:claim:${now}`,
     campaignId: campaign.id,
-    status: "PENDING",
+    submittedBy,
     submittedAt: now,
-    submittedBy: changedBy,
-    description: input.description,
-    evidence: input.evidence,
+    reason: input.reason.trim(),
+    evidence: input.evidence.map((evidence) => ({ ...evidence })),
+    status: "PENDING",
   };
-  if (input.payoutAmount !== undefined) {
-    claim.payoutAmount = input.payoutAmount;
-  }
+
   return dataSource.saveCampaign({
     ...campaign,
-    updatedAt: now,
     insuranceClaim: claim,
+    updatedAt: now,
   });
 }
 
 export const requestCampaignInsurancePayout = submitCampaignInsuranceClaim;
+export const submitProofOfFailure = submitCampaignInsuranceClaim;
 
 export function csvEscape(value: unknown): string {
   const stringValue = String(value ?? "");
