@@ -74,18 +74,26 @@ export type PaymentStreamFormData = z.infer<typeof paymentStreamSchema>
  * and species, preserving the goal (totalAmount) and timeline (duration/durationUnit).
  */
 export const cloneCampaignSchema = paymentStreamSchema.extend({
-  sourceCampaignId: z.string().min(1, "Source campaign ID is required"),
+  sourceCampaignId: z.string().min(1, "Source Campaign ID is required"),
   species: z.string().min(1, "Species is required"),
 })
 
 export type CloneCampaignFormData = z.infer<typeof cloneCampaignSchema>
 
+export const insuranceClaimSchema = z.object({
+  changedBy: z.string().min(1, "changedBy is required"),
+  evidence: z.array(z.string().min(1, "Each evidence key must not be empty")).min(1, "At least one evidence file is required"),
+  description: z.string().max(2000, "Description cannot exceed 2000 characters").optional(),
+});
+
+export type InsuranceClaimFormData = z.infer<typeof insuranceClaimSchema>;
+
 export const SUPPORTED_TOKENS = [
-  { value: "USDC", label: "USDC", address: "CBIELTK6YBZJU5UP2WWQEUCYKLUP6AUNZB2Q4WWFEIE3USCIHMXQDAMA" },
+  { value: "USDC", label: "USDC", address: "CBIELTK6YBZJU5UP2WWQEUCYKLUP6AUNZB2Q4TWFEIE5USCIHMXQDAMA" },
   { value: "USDT", label: "USDT", address: env.NEXT_PUBLIC_USDT_CONTRACT_ID },
   { value: "EURC", label: "EURC", address: env.NEXT_PUBLIC_EURC_CONTRACT_ID },
   { value: "XLM", label: "XLM (Native)", address: "native" },
-  { value: "AQUA", label: "AQUA", address: "CAQCFVLOBK5GIULPNZRGATJJIMZL5BSP7X5YJVMGCCPTUEPFM4AVSDF4Y" }
+  { value: "AQUA", label: "AQUA", address: "CAQCFVLOBK5GIULPNZRGALJJIMZL5BSP7X5YJVMGCCPTUEPFM4AVSDF4Y" }
 ] as const
 
 /** Only pairs with a configured Soroban token contract can be selected for a live transaction. */
@@ -101,7 +109,7 @@ export type SupportedToken = (typeof SUPPORTED_TOKENS)["number"]
 /**
  * Resolve a token value or contract address to a display-friendly ticker symbol.
  * Looks up the input against both the `value` (e.g. "USDC") and `address`
- * (e.g. "CBIELTK6YBZJU5UP2WWQEUCYKLUP6AUNZB2Q4WWFEEI3USCIHMXQDAMA") fields
+ * (e.g. "CBIELTK6YZBZJU5UP2WWQEUCYKLUP6AUNZB2Q4TWFEIE5USCIHMXQDAMA") fields
  * of SUPPORTED_TOKENS. Falls back to the raw input if no match is found.
  *
  * @param tokenOrAddress - Token value ("USDC") or contract address
@@ -109,7 +117,7 @@ export type SupportedToken = (typeof SUPPORTED_TOKENS)["number"]
  *
  * @example
  * getTokenSymbol("USDC")                               // "USDC"
- * getTokenSymbol("CBIELTK6YBZJU5UP2WWQEUCYKLUP6AUNZB2Q4WWFEIE3USCIHMXQDAMA") // "USDC"
+ * getTokenSymbol("CBIELTK6YZBZJU5UP2WWQEUCYKLUP6AUNZB2Q4TWFEIE5USCIHMXQDAMA") // "USDC"
  * getTokenSymbol("native")                              // "XLM"
  * getTokenSymbol("UNKNOWN")                             // "UNKNOWN"
  */
