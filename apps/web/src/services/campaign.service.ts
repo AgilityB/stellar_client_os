@@ -31,6 +31,28 @@ export interface StatusHistoryEntry {
   reason?: string;
 }
 
+export type CampaignInsuranceClaimStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+export interface CampaignInsuranceClaimInput {
+  description: string;
+  evidence: string[];
+  payoutAmount?: string;
+}
+
+export interface CampaignInsuranceClaim {
+  id: string;
+  campaignId: string;
+  status: CampaignInsuranceClaimStatus;
+  submittedAt: number;
+  submittedBy: string;
+  description: string;
+  evidence: string[];
+  payoutAmount?: string;
+  reviewedAt?: number;
+  reviewedBy?: string;
+  reviewReason?: string;
+}
+
 export type CampaignVerificationStatus = "verified" | "partial" | "unverified";
 export type CampaignRiskLevel = "low" | "moderate" | "high" | "critical";
 export type CampaignHealthLevel = "excellent" | "good" | "fair" | "poor";
@@ -103,6 +125,7 @@ export interface CampaignRecord {
   healthAssessment?: CampaignHealthAssessment;
   healthScore?: number;
   healthLevel?: CampaignHealthLevel;
+  insuranceClaim?: CampaignInsuranceClaim;
 }
 
 export interface CampaignCreatorBadge {
@@ -488,6 +511,40 @@ export async function transitionCampaignStatus(
   };
   return dataSource.saveCampaign(next);
 }
+
+export async function submitCampaignInsuranceClaim(
+  campaign: CampaignRecord,
+  input: CampaignInsuranceClaimInput,
+  changedBy: string,
+  dataSource = getCampaignDataSource(),
+  now = Date.now(),
+): Promise<CampaignRecord> {
+  if (campaign.status !== "FAILED") {
+    throw new Error("Insurance claims can only be submitted for failed campaigns");
+  }
+  if (campaign.insuranceClaim?.status === "PENDING" || campaign.insuranceClaim?.status === "APPROVED") {
+    throw new Error("An insurance claim has already been submitted for this campaign");
+  }
+  const claim: CampaignInsuranceClaim = {
+    id: `${campaign.id}:${now}`,
+    campaignId: campaign.id,
+    status: "PENDING",
+    submittedAt: now,
+    submittedBy: changedBy,
+    description: input.description,
+    evidence: input.evidence,
+  };
+  if (input.payoutAmount !== undefined) {
+    claim.payoutAmount = input.payoutAmount;
+  }
+  return dataSource.saveCampaign({
+    ...campaign,
+    updatedAt: now,
+    insuranceClaim: claim,
+  });
+}
+
+export const requestCampaignInsurancePayout = submitCampaignInsuranceClaim;
 
 export function csvEscape(value: unknown): string {
   const stringValue = String(value ?? "");
