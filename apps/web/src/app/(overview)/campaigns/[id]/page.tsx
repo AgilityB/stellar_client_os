@@ -8,16 +8,16 @@ import {
   Heart,
   Users,
   Target,
-  Calendar,
-  Share2,
   Edit,
   ShieldCheck,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CampaignSponsorWall } from "@/components/modules/campaign/sponsor-wall/CampaignSponsorWall";
 import { CampaignCollaboration } from "@/components/modules/campaign/collaboration/CampaignCollaboration";
+import { CampaignQAModeration } from "@/components/modules/campaign/qa/CampaignQAModeration";
 
 export default function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -114,7 +114,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
       {/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722) */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
-        <TabsList className="grid w-full grid-cols-3 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
+        <TabsList className="grid w-full grid-cols-4 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
           <TabsTrigger value="overview" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
             <Target className="mr-1.5 h-4 w-4" /> Overview & Story
           </TabsTrigger>
@@ -123,6 +123,9 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </TabsTrigger>
           <TabsTrigger value="collaboration" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
             <Users className="mr-1.5 h-4 w-4 text-purple-400" /> Co-Creators (#722)
+          </TabsTrigger>
+          <TabsTrigger value="qa" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
+            <MessageSquare className="mr-1.5 h-4 w-4 text-purple-400" /> Q&A (#791)
           </TabsTrigger>
         </TabsList>
 
@@ -175,6 +178,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         {/* Tab 3: Co-Creators Collaboration (#722) */}
         <TabsContent value="collaboration">
           <CampaignCollaboration campaignId={campaign.id} campaignTitle={campaign.title} />
+        </TabsContent>
+
+        {/* Tab 4: Q&A Moderation (#791) */}
+        <TabsContent value="qa">
+          <CampaignQAModeration campaignId={campaign.id} campaignTitle={campaign.title} />
         </TabsContent>
       </Tabs>
     </div>
