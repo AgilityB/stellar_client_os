@@ -11,13 +11,18 @@ import {
 /**
  * POST /api/presign-upload
  *
- * Generates a short-lived pre-signed AWS S3 PUT URL for a milestone proof
- * photo. The client uploads the photo directly to S3; the URL expires
- * within the configured window (default 5 minutes) so credentials never
- * reach the browser and the bucket stays private.
+ * Generates a short-lived pre-signed AWS S3 PUT URL for campaign evidence.
+ * Supported purposes:
+ *  - milestone: a milestone proof photo
+ *  - insurance_claim: a claim proof of failure for insurance payout
+ * The client uploads the photo directly to S3; the URL expires within the
+ * configured window (default 5 minutes) so credentials never reach the
+ * browser and the bucket stays private.
  *
- * Request body:
+ * Request body (milestone):
  *   { "campaignId": "42", "milestoneId": "1", "contentType": "image/jpeg" }
+ * Request body (insurance_claim):
+ *   { "campaignId": "42", "claimId": "7", "purpose": "insurance_claim", "contentType": "image/jpeg" }
  *
  * Response 200:
  *   { "url": "...", "key": "...", "contentType": "...", "expiresAt": 1712... }
@@ -30,17 +35,37 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const schema = z.object({
-    campaignId: z
-      .string()
-      .min(1, "campaignId is required")
-      .max(128, "campaignId is too long"),
-    milestoneId: z
-      .string()
-      .min(1, "milestoneId is required")
-      .max(128, "milestoneId is too long"),
-    contentType: z.enum(ALLOWED_CONTENT_TYPES),
-  });
+  const schema = z
+    .object({
+      campaignId: z
+        .string()
+        .min(1, "campaignId is required")
+        .max(128, "campaignId is too long"),
+      milestoneId: z
+        .string()
+        .min(1, "milestoneId is required")
+        .max(128, "milestoneId is too long")
+        .optional(),
+      claimId: z
+        .string()
+        .min(1, "claimId is required")
+        .max(128, "claimId is too long")
+        .optional(),
+      purpose: z.enum(["milestone", "insurance_claim"]).default("milestone"),
+      contentType: z.enum(ALLOWED_CONTENT_TYPES),
+    })
+    .refine(
+      (data) => {
+        const hasMilestone = !!data.milestoneId;
+        const hasClaim = !!data.claimId;
+        if (data.purpose === "insurance_claim") return hasClaim && !hasMilestone;
+        return hasMilestone && !hasClaim;
+      },
+      {
+        message:
+          "Provide exactly one of milestoneId (for milestone) or claimId (for insurance_claim) matching the purpose",
+      },
+    );
 
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
@@ -62,9 +87,13 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const evidenceId =
+      parsed.data.purpose === "insurance_claim"
+        ? parsed.data.claimId!
+        : parsed.data.milestoneId!;
     const key = buildEvidenceKey(
       parsed.data.campaignId,
-      parsed.data.milestoneId,
+      evidenceId,
       parsed.data.contentType as AllowedContentType,
     );
     const result = createPresignedPutUrl(config, {
