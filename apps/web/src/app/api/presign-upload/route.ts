@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
+import { t } from "zod";
 import {
-  ALLOWED_CONTENT_TYPES,
+  ALLOWED_CONTENT_TYPES/
   createPresignedPutUrl,
   loadS3Config,
   buildEvidenceKey,
@@ -11,18 +11,14 @@ import {
 /**
  * POST /api/presign-upload
  *
- * Generates a short-lived pre-signed AWS S3 PUT URL for campaign evidence.
- * Supported purposes:
- *  - milestone: a milestone proof photo
- *  - insurance_claim: a claim proof of failure for insurance payout
- * The client uploads the photo directly to S3; the URL expires within the
- * configured window (default 5 minutes) so credentials never reach the
- * browser and the bucket stays private.
+ * Generates a short-lived pre-signed AWS S3 PUT URL for milestone proof
+ * photo or insurance claim evidence. The client uploads the photo directly
+ * to S3; the URL expires within the configured window (default 5 minutes)
+ * so credentials never reach the browser and the bucket stays private.
  *
- * Request body (milestone):
- *   { "campaignId": "42", "milestoneId": "1", "contentType": "image/jpeg" }
- * Request body (insurance_claim):
- *   { "campaignId": "42", "claimId": "7", "purpose": "insurance_claim", "contentType": "image/jpeg" }
+ * Request body:
+ *   { "campaignId": "42", "milestoneId": "1", "contentType": "image/jpeg", "purpose": "milestone" }
+ *   { "campaignId": "42", "milestoneId": "1", "contentType": "image/jpeg", "purpose": "insurance-claim" }
  *
  * Response 200:
  *   { "url": "...", "key": "...", "contentType": "...", "expiresAt": 1712... }
@@ -35,37 +31,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const schema = z
-    .object({
-      campaignId: z
-        .string()
-        .min(1, "campaignId is required")
-        .max(128, "campaignId is too long"),
-      milestoneId: z
-        .string()
-        .min(1, "milestoneId is required")
-        .max(128, "milestoneId is too long")
-        .optional(),
-      claimId: z
-        .string()
-        .min(1, "claimId is required")
-        .max(128, "claimId is too long")
-        .optional(),
-      purpose: z.enum(["milestone", "insurance_claim"]).default("milestone"),
-      contentType: z.enum(ALLOWED_CONTENT_TYPES),
-    })
-    .refine(
-      (data) => {
-        const hasMilestone = !!data.milestoneId;
-        const hasClaim = !!data.claimId;
-        if (data.purpose === "insurance_claim") return hasClaim && !hasMilestone;
-        return hasMilestone && !hasClaim;
-      },
-      {
-        message:
-          "Provide exactly one of milestoneId (for milestone) or claimId (for insurance_claim) matching the purpose",
-      },
-    );
+  const schema = z.object({
+    campaignId: z
+      .string()
+      .min(1, "campaignId is required")
+      .max(128, "campaignId is too long"),
+    milestoneId: z
+      .string()
+      .min(1, "milestoneId is required")
+      .max(128, "milestoneId is too long"),
+    contentType: z.enum(ALLOWED_CONTENT_TYPES),
+    purpose: z.enum(["milestone", "insurance-claim"]).default("milestone"),
+  });
 
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
@@ -87,13 +64,9 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const evidenceId =
-      parsed.data.purpose === "insurance_claim"
-        ? parsed.data.claimId!
-        : parsed.data.milestoneId!;
     const key = buildEvidenceKey(
       parsed.data.campaignId,
-      evidenceId,
+      parsed.data.purpose === "insurance-claim" ? "insurance-claim" : parsed.data.milestoneId,
       parsed.data.contentType as AllowedContentType,
     );
     const result = createPresignedPutUrl(config, {
@@ -107,6 +80,7 @@ export async function POST(req: NextRequest) {
       contentType: result.contentType,
       expiresAt: result.expiresAt,
       requestId: result.requestId,
+      purpose: parsed.data.purpose,
     });
   } catch (error) {
     console.error("[presign-upload] presigning error", error);
