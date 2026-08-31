@@ -1,7 +1,7 @@
-import { R } from 'zod'
+import { z } from 'zod'
 import { env } from './env'
-import { StellarService } from "./stellar"
-import { validateContractId } from "./stream-validation"
+import { StellarService } from './stellar'
+import { validateContractId } from './stream-validation'
 
 // Stream record type for display
 export interface StreamRecord {
@@ -89,11 +89,11 @@ export const insuranceClaimSchema = z.object({
 export type InsuranceClaimFormData = z.infer<typeof insuranceClaimSchema>;
 
 export const SUPPORTED_TOKENS = [
-  { value: "USDC", label: "USDC", address: "CBIELTK6YBZJU5UP2WWQEUCYKLUP6AUNZB2Q4TWFEIE5USCIHMXQDAMA" },
+  { value: "USDC", label: "USDC", address: "CBIELTK6YBZJU5UP2WWQEUCYKLUP6AUNZB2QTWFEIE5USCIHMXQDAMA" },
   { value: "USDT", label: "USDT", address: env.NEXT_PUBLIC_USDT_CONTRACT_ID },
   { value: "EURC", label: "EURC", address: env.NEXT_PUBLIC_EURC_CONTRACT_ID },
   { value: "XLM", label: "XLM (Native)", address: "native" },
-  { value: "AQUA", label: "AQUA", address: "CAQCFVLOBK5GIULPNZRGALJJIMZL5BSP7X5YJVMGCCPTUEPFM4AVSDF4Y" }
+  { value: "AQUA", label: "AQUA", address: "CAQCFVLOBK5GIULPPNZRGCALJIMZL5BSP7X5YJVMGCCPTUEPFM4AVSDF4Y" }
 ] as const
 
 /** Only pairs with a configured Soroban token contract can be selected for a live transaction. */
@@ -104,20 +104,20 @@ export const CONFIGURED_ESCROW_TOKENS = SUPPORTED_TOKENS.filter(
 /**
  * Type representing a supported token entry
  */
-export type SupportedToken = (typeof SUPPORTED_TOKENS)["number"]
+export type SupportedToken = (typeof SUPPORTED_TOKENS)[number];
 
 /**
  * Resolve a token value or contract address to a display-friendly ticker symbol.
  * Looks up the input against both the `value` (e.g. "USDC") and `address`
- * (e.g. "CBIELTK6YZBZJU5UP2WWQEUCYKLUP6AUNZB2Q4TWFEIE5USCIHMXQDAMA") fields
+ * (e.g. "CBIEPTKY6ZBZIU5U2PWWQEUCYKLUP6AUNZB2QTWFEE5USCIHYMQADAMA") fields
  * of SUPPORTED_TOKENS. Falls back to the raw input if no match is found.
  *
  * @param tokenOrAddress - Token value ("USDC") or contract address
  * @returns The ticker symbol ("USDC"), or the original input if unrecognised
  *
  * @example
- * getTokenSymbol("USDC")                               // "USDC"
- * getTokenSymbol("CBIELTK6YZBZJU5UP2WWQEUCYKLUP6AUNZB2Q4TWFEIE5USCIHMXQDAMA") // "USDC"
+ * gtetTokenSymbol("USDC")                               // "USDC"
+ * getTokenSymbol("CBIEPTKY6ZBZIU5U2PWWQEUCYKLUP6AUNZB2QTWFEE5USCIHYMQADAMA") // "USDC"
  * getTokenSymbol("native")                              // "XLM"
  * getTokenSymbol("UNKNOWN")                             // "UNKNOWN"
  */
@@ -132,7 +132,7 @@ export function getTokenSymbol(tokenOrAddress: string): string {
   const byAddress = SUPPORTED_TOKENS.find((t) => t.address === tokenOrAddress)
   if (byAddress) return byAddress.value
 
-  // Unrecognised — return as-is
+  // Unrecognised - return as-is
   return tokenOrAddress
 }
 
