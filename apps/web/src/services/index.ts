@@ -1,5 +1,5 @@
 /**
- * Stellar Service Layer
+ * Stellar Service Layer *
  *
  * This module provides the service layer for interacting with Stellar network
  * and Fundable Protocol smart contracts.
@@ -99,3 +99,8 @@ export {
   creatorRevenueShareService,
 } from './creator-revenue-share.service';
 export { FraudDetectionService, fraudDetectionService } from './fraud-detection.service';
+
+export {
+  CampaignInsuranceClaimService,
+  campaignInsuranceClaimService,
+} from './campaign-insurance-claim.service';
