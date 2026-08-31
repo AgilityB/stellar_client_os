@@ -126,6 +126,46 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
+      {showInsuranceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-zinc-100">Submit Insurance Claim</h2>
+              <button onClick={() => setShowInsuranceModal(false)} className="text-zinc-400 hover:text-zinc-200 text-xl">×</button>
+            </div>
+            {claimSubmitted ? (
+              <div className="space-y-2">
+                <p className="text-sm text-emerald-400 font-semibold">Claim submitted successfully.</p>
+                <p className="text-xs text-zinc-400">The campaign creator has submitted proof of failure. The insurance review process will evaluate your claim and pay out if eligible.</p>
+              </div>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setClaimSubmitted(true);
+                }}
+                className="space-y-4"
+              >
+                <div>
+                  <label htmlFor="evidence" className="block text-xs font-medium text-zinc-400 mb-1">Evidence of campaign failure</label>
+                  <textarea
+                    id="evidence"
+                    required
+                    rows={4}
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950 p-3 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-purple-600"
+                    placeholder="Describe why the campaign failed to meet its goals and provide any supporting evidence or links..."
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setShowInsuranceModal(false)}>Cancel</Button>
+                  <Button type="submit" size="sm" className="bg-amber-600 text-white hover:bg-amber-700">Submit Claim</Button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Hero Banner Header */}
       <div className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-gradient-to-r from-zinc-900 via-purple-950/20 to-zinc-900 p-6 md:p-8 shadow-2xl">
         <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
