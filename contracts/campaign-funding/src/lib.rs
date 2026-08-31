@@ -3,6 +3,18 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
 };
 
+/// Optional `Address` wrapper suitable for use inside `#[contracttype]` structs.
+///
+/// Soroban's `#[contracttype]` macro does not support generic type parameters,
+/// so we cannot use `Option<Address>` directly.  This enum provides the same
+/// semantics.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OptionalAddress {
+    None,
+    Some(Address),
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -42,6 +54,8 @@ pub enum CampaignStatus {
     Failed,
     /// Creator has already claimed the raised funds.
     Claimed,
+    /// Sponsor withdrew after 90-day no-planter window.
+    SponsorWithdrew,
 }
 
 /// Core campaign record stored on-chain.
@@ -70,6 +84,12 @@ pub struct Campaign {
     pub total_raised: i128,
     /// Current lifecycle state.
     pub status: CampaignStatus,
+    /// Unix timestamp (seconds) when the campaign was created.
+    /// Used to enforce the 90-day planter-assignment window.
+    pub created_at: u64,
+    /// Address of the planter assigned to this campaign, if any.
+    /// `OptionalAddress::None` means no planter has been assigned yet.
+    pub planter: OptionalAddress,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +145,23 @@ pub struct RefundIssuedEvent {
     pub amount: i128,
 }
 
+/// Emitted when a planter is assigned to a campaign.
+#[contracttype]
+#[derive(Clone)]
+pub struct PlanterAssignedEvent {
+    pub campaign_id: u64,
+    pub planter: Address,
+}
+
+/// Emitted when the sponsor withdraws funds under the 90-day no-planter rule.
+#[contracttype]
+#[derive(Clone)]
+pub struct SponsorWithdrewEvent {
+    pub campaign_id: u64,
+    pub sponsor: Address,
+    pub amount: i128,
+}
+
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
@@ -168,6 +205,14 @@ pub enum Error {
     /// The contribution would push `total_raised` above the hard cap
     /// (`target_amount`).
     TargetExceeded = 16,
+    /// A planter has already been assigned to this campaign.
+    PlanterAlreadyAssigned = 17,
+    /// The 90-day planter-assignment window has not yet elapsed.
+    WithdrawWindowNotOpen = 18,
+    /// A planter is assigned; the sponsor cannot use the no-planter withdrawal.
+    PlanterAssigned = 19,
+    /// Nothing to withdraw (total_raised is zero).
+    NothingToWithdraw = 20,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +225,8 @@ const MAX_FEE: u32 = 500;
 const LEDGER_THRESHOLD: u32 = 518_400;
 /// Storage TTL bump: ~31 days at 5 s/ledger.
 const LEDGER_BUMP: u32 = 535_680;
+/// Seconds in 90 days (90 × 24 × 3600).
+const NINETY_DAYS: u64 = 7_776_000;
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -272,7 +319,8 @@ impl CampaignFundingContract {
         if min_target <= 0 || min_target > target_amount {
             panic_with_error!(&env, Error::InvalidTarget);
         }
-        if deadline <= env.ledger().timestamp() {
+        let now = env.ledger().timestamp();
+        if deadline <= now {
             panic_with_error!(&env, Error::InvalidDeadline);
         }
 
@@ -294,6 +342,8 @@ impl CampaignFundingContract {
             deadline,
             total_raised: 0,
             status: CampaignStatus::Active,
+            created_at: now,
+            planter: OptionalAddress::None,
         };
 
         Self::save_campaign(&env, count, &campaign);
@@ -311,6 +361,107 @@ impl CampaignFundingContract {
         );
 
         count
+    }
+
+    /// Assign a planter to a campaign.
+    ///
+    /// Only the campaign creator may call this function.  Once a planter is
+    /// assigned it cannot be changed.  Assigning a planter closes the 90-day
+    /// sponsor-withdrawal window for that campaign.
+    ///
+    /// # Arguments
+    /// * `campaign_id` — Target campaign.
+    /// * `planter`     — Address of the planter to assign.
+    ///
+    /// # Errors
+    /// * [`Error::CampaignNotFound`]       — campaign does not exist.
+    /// * [`Error::CampaignNotActive`]      — campaign is not `Active`.
+    /// * [`Error::Unauthorized`]           — caller is not the campaign creator.
+    /// * [`Error::PlanterAlreadyAssigned`] — a planter is already set.
+    pub fn assign_planter(env: Env, campaign_id: u64, planter: Address) {
+        let mut campaign = Self::load_campaign(&env, campaign_id);
+
+        campaign.creator.require_auth();
+
+        if campaign.status != CampaignStatus::Active {
+            panic_with_error!(&env, Error::CampaignNotActive);
+        }
+        if campaign.planter != OptionalAddress::None {
+            panic_with_error!(&env, Error::PlanterAlreadyAssigned);
+        }
+
+        campaign.planter = OptionalAddress::Some(planter.clone());
+        Self::save_campaign(&env, campaign_id, &campaign);
+
+        env.events().publish(
+            ("PlanterAssigned", campaign_id),
+            PlanterAssignedEvent {
+                campaign_id,
+                planter,
+            },
+        );
+    }
+
+    /// Sponsor withdrawal — 90-day no-planter rule.
+    ///
+    /// If at least 90 days have passed since the campaign was created **and**
+    /// no planter has been assigned, the campaign sponsor (creator) may
+    /// withdraw the full `total_raised` amount without paying the protocol
+    /// fee.
+    ///
+    /// This function is permissioned: only the campaign creator may call it.
+    ///
+    /// # Arguments
+    /// * `campaign_id` — Target campaign.
+    ///
+    /// # Errors
+    /// * [`Error::CampaignNotFound`]     — campaign does not exist.
+    /// * [`Error::CampaignNotActive`]    — campaign is not `Active`.
+    /// * [`Error::Unauthorized`]         — caller is not the campaign creator.
+    /// * [`Error::PlanterAssigned`]      — a planter has already been assigned.
+    /// * [`Error::WithdrawWindowNotOpen`]— 90 days have not yet elapsed.
+    /// * [`Error::NothingToWithdraw`]    — `total_raised` is zero.
+    pub fn sponsor_withdraw(env: Env, campaign_id: u64) {
+        let mut campaign = Self::load_campaign(&env, campaign_id);
+
+        campaign.creator.require_auth();
+
+        if campaign.status != CampaignStatus::Active {
+            panic_with_error!(&env, Error::CampaignNotActive);
+        }
+        if campaign.planter != OptionalAddress::None {
+            panic_with_error!(&env, Error::PlanterAssigned);
+        }
+        let now = env.ledger().timestamp();
+        if now < campaign.created_at + NINETY_DAYS {
+            panic_with_error!(&env, Error::WithdrawWindowNotOpen);
+        }
+        let amount = campaign.total_raised;
+        if amount <= 0 {
+            panic_with_error!(&env, Error::NothingToWithdraw);
+        }
+
+        // Mark campaign as withdrawn before transferring (check-effects-interactions).
+        campaign.status = CampaignStatus::SponsorWithdrew;
+        campaign.total_raised = 0;
+        Self::save_campaign(&env, campaign_id, &campaign);
+
+        // Transfer full amount — no protocol fee deducted.
+        let token_client = token::Client::new(&env, &campaign.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &campaign.creator,
+            &amount,
+        );
+
+        env.events().publish(
+            ("SponsorWithdrew", campaign_id),
+            SponsorWithdrewEvent {
+                campaign_id,
+                sponsor: campaign.creator,
+                amount,
+            },
+        );
     }
 
     /// Contribute tokens to a campaign.
@@ -806,6 +957,9 @@ mod tests {
         assert_eq!(campaign.deadline, 2_000);
         assert_eq!(campaign.total_raised, 0);
         assert_eq!(campaign.status, CampaignStatus::Active);
+        // New fields: created_at should be set to ledger time; planter should be None.
+        assert_eq!(campaign.created_at, 1_000);
+        assert_eq!(campaign.planter, OptionalAddress::None);
     }
 
     #[test]
@@ -875,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidDeadline")]
+    #[should_panic(expected = "Error(Contract, #5)")]
     fn test_create_campaign_deadline_in_past() {
         let env = Env::default();
         env.mock_all_auths();
@@ -962,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotActive")]
+    #[should_panic(expected = "Error(Contract, #8)")]
     fn test_contribute_after_deadline() {
         let env = Env::default();
         env.mock_all_auths();
@@ -983,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "InvalidAmount")]
+    #[should_panic(expected = "Error(Contract, #4)")]
     fn test_contribute_zero_amount() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1000,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "TargetExceeded")]
+    #[should_panic(expected = "Error(Contract, #16)")]
     fn test_contribute_exceeds_hard_cap() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1122,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "DeadlineNotReached")]
+    #[should_panic(expected = "Error(Contract, #9)")]
     fn test_trigger_expiry_before_deadline() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1137,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotActive")]
+    #[should_panic(expected = "Error(Contract, #8)")]
     fn test_trigger_expiry_already_resolved() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1233,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotSuccessful")]
+    #[should_panic(expected = "Error(Contract, #11)")]
     fn test_claim_funds_on_active_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1247,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotSuccessful")]
+    #[should_panic(expected = "Error(Contract, #11)")]
     fn test_claim_funds_on_failed_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1263,7 +1417,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "AlreadyClaimed")]
+    #[should_panic(expected = "Error(Contract, #13)")]
     fn test_claim_funds_double_claim() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1351,7 +1505,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotFailed")]
+    #[should_panic(expected = "Error(Contract, #10)")]
     fn test_refund_on_active_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1371,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "CampaignNotFailed")]
+    #[should_panic(expected = "Error(Contract, #10)")]
     fn test_refund_on_successful_campaign() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1392,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "NoContributionFound")]
+    #[should_panic(expected = "Error(Contract, #12)")]
     fn test_refund_no_contribution() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1410,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "NoContributionFound")]
+    #[should_panic(expected = "Error(Contract, #12)")]
     fn test_refund_double_refund_prevented() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1446,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "FeeTooHigh")]
+    #[should_panic(expected = "Error(Contract, #14)")]
     fn test_set_fee_rate_too_high() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1496,5 +1650,242 @@ mod tests {
         // fee = 9_999 * 100 / 10_000 = 99 (integer division); net = 9_900.
         assert_eq!(token_client.balance(&creator), 9_900);
         assert_eq!(token_client.balance(&fee_collector), 99);
+    }
+
+    // -----------------------------------------------------------------------
+    // assign_planter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_assign_planter_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let planter = Address::generate(&env);
+
+        let id = client.create_campaign(&creator, &token, &10_000, &5_000, &90_000);
+
+        // Before assignment: planter should be None.
+        assert_eq!(client.get_campaign(&id).planter, OptionalAddress::None);
+
+        client.assign_planter(&id, &planter);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(campaign.planter, OptionalAddress::Some(planter));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #17)")]
+    fn test_assign_planter_twice_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let planter1 = Address::generate(&env);
+        let planter2 = Address::generate(&env);
+
+        let id = client.create_campaign(&creator, &token, &10_000, &5_000, &90_000);
+        client.assign_planter(&id, &planter1);
+        // Second assignment must fail with PlanterAlreadyAssigned = 17.
+        client.assign_planter(&id, &planter2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_assign_planter_on_failed_campaign() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+        let planter = Address::generate(&env);
+
+        let id = client.create_campaign(&creator, &token, &10_000, &5_000, &2_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id); // → Failed
+        // Assigning to a failed campaign must panic.
+        client.assign_planter(&id, &planter);
+    }
+
+    // -----------------------------------------------------------------------
+    // sponsor_withdraw
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sponsor_withdraw_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        // Campaign created at t=1_000.
+        set_time(&env, 1_000);
+        let (_, client, _, fee_collector) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, token_client, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &5_000);
+
+        // Deadline well in the future so campaign stays Active past 90 days.
+        let id = client.create_campaign(
+            &creator,
+            &token_addr,
+            &10_000,
+            &5_000,
+            &(1_000_u64 + NINETY_DAYS + 100_000),
+        );
+        client.contribute(&contributor, &id, &3_000);
+
+        // Advance to exactly 90 days after creation.
+        set_time(&env, 1_000 + NINETY_DAYS);
+        client.sponsor_withdraw(&id);
+
+        let campaign = client.get_campaign(&id);
+        assert_eq!(campaign.status, CampaignStatus::SponsorWithdrew);
+        assert_eq!(campaign.total_raised, 0);
+
+        // Full amount returned to creator — no protocol fee.
+        assert_eq!(token_client.balance(&creator), 3_000);
+        // Fee collector receives nothing.
+        assert_eq!(token_client.balance(&fee_collector), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #18)")]
+    fn test_sponsor_withdraw_before_90_days() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &5_000);
+
+        let id = client.create_campaign(
+            &creator,
+            &token_addr,
+            &10_000,
+            &5_000,
+            &(1_000_u64 + NINETY_DAYS + 100_000),
+        );
+        client.contribute(&contributor, &id, &3_000);
+
+        // Only 89 days have passed — must panic with WithdrawWindowNotOpen = 18.
+        set_time(&env, 1_000 + NINETY_DAYS - 1);
+        client.sponsor_withdraw(&id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #19)")]
+    fn test_sponsor_withdraw_with_planter_assigned() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let planter = Address::generate(&env);
+        token_admin_client.mint(&contributor, &5_000);
+
+        let id = client.create_campaign(
+            &creator,
+            &token_addr,
+            &10_000,
+            &5_000,
+            &(1_000_u64 + NINETY_DAYS + 100_000),
+        );
+        client.contribute(&contributor, &id, &3_000);
+        client.assign_planter(&id, &planter);
+
+        // Planter is assigned — must panic with PlanterAssigned = 19.
+        set_time(&env, 1_000 + NINETY_DAYS);
+        client.sponsor_withdraw(&id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #20)")]
+    fn test_sponsor_withdraw_nothing_to_withdraw() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // No contributions made.
+        let id = client.create_campaign(
+            &creator,
+            &token,
+            &10_000,
+            &5_000,
+            &(1_000_u64 + NINETY_DAYS + 100_000),
+        );
+
+        // 90 days pass, no planter, but total_raised == 0.
+        set_time(&env, 1_000 + NINETY_DAYS);
+        client.sponsor_withdraw(&id); // Must panic with NothingToWithdraw = 20.
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #8)")]
+    fn test_sponsor_withdraw_on_failed_campaign() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let id = client.create_campaign(&creator, &token, &10_000, &5_000, &2_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id); // → Failed
+
+        // sponsor_withdraw on a non-Active campaign must panic.
+        set_time(&env, 1_000 + NINETY_DAYS);
+        client.sponsor_withdraw(&id);
+    }
+
+    #[test]
+    fn test_sponsor_withdraw_exactly_at_90_days_boundary() {
+        // Verify the boundary is inclusive: created_at + NINETY_DAYS is allowed.
+        let env = Env::default();
+        env.mock_all_auths();
+        let created_at: u64 = 0;
+        set_time(&env, created_at);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, token_client, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &1_000);
+
+        // Deadline set to 1 second past the 90-day window so campaign remains Active.
+        let id = client.create_campaign(
+            &creator,
+            &token_addr,
+            &10_000,
+            &5_000,
+            &(NINETY_DAYS + 1),
+        );
+        client.contribute(&contributor, &id, &1_000);
+
+        // Advance to exactly 90 days.
+        set_time(&env, NINETY_DAYS);
+        client.sponsor_withdraw(&id);
+
+        assert_eq!(client.get_campaign(&id).status, CampaignStatus::SponsorWithdrew);
+        assert_eq!(token_client.balance(&creator), 1_000);
     }
 }

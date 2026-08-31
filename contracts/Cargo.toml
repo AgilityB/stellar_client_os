@@ -19,7 +19,6 @@ repository = "https://github.com/Fundable-Protocol/stellar_client"
 
 [workspace.dependencies]
 soroban-sdk = "=27.0.6"
-soroban-sdk = "=25.3.2"
 
 [profile.release]
 opt-level = "z"
