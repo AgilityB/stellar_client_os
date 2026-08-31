@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { t } from "zod";
+import { z } from "zod";
 import {
-  ALLOWED_CONTENT_TYPES/
+  ALLOWED_CONTENT_TYPES,
   createPresignedPutUrl,
   loadS3Config,
   buildEvidenceKey,
