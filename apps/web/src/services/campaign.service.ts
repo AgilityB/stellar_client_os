@@ -531,6 +531,7 @@ export async function submitCampaignInsuranceClaim(
   if (campaign.insuranceClaim) throw new Error("Insurance claim already submitted for this campaign");
   if (!input.reason || !input.reason.trim()) throw new Error("Insurance claim reason is required");
   if (!input.evidence?.length) throw new Error("At least one proof of failure is required");
+  if (!input.evidence.every((evidence) => evidence.url?.trim())) throw new Error("Each proof of failure must include a URL");
 
   const claim: CampaignInsuranceClaim = {
     id: `${campaign.id}:claim:${now}`,
