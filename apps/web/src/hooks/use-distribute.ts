@@ -77,7 +77,7 @@ export function useDistribute() {
 
             try {
                 await queryClient.cancelQueries({ queryKey: ['streams'] });
-            } catch (error) {
+            } catch {
                 // Silently fail cache snapshot
             }
 

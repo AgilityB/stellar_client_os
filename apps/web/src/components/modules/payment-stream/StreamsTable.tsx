@@ -23,7 +23,7 @@ import {
     TableHeader,
 } from "@/components/ui/table";
 
-import { streamColumns, useStreamColumns } from "./streamColumns";
+import { useStreamColumns } from "./streamColumns";
 import { StreamRecord } from "@/lib/validations";
 import { validPageLimits } from "@/lib/constants";
 import AppSelect from "@/components/molecules/AppSelect";
@@ -50,6 +50,7 @@ function StreamsTable({
     const searchParams = useSearchParams();
     const pageCount = Math.ceil(totalCount / limit);
     const [sorting, setSorting] = useState<SortingState>([]);
+    const [globalFilter, setGlobalFilter] = useState<string>("");
 
     const defaultColumns = useStreamColumns();
     const columnsUsed = useMemo(() => columns ?? defaultColumns, [columns, defaultColumns]);
@@ -62,12 +63,14 @@ function StreamsTable({
         getPaginationRowModel: getPaginationRowModel(),
         getSortedRowModel: getSortedRowModel(),
         onSortingChange: setSorting,
+        onGlobalFilterChange: setGlobalFilter,
         state: {
             pagination: {
                 pageIndex: page - 1,
                 pageSize: limit,
             },
             sorting,
+            globalFilter,
         },
         manualPagination: true,
         pageCount,

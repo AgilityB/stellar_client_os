@@ -5,12 +5,20 @@ import type {
   CreateOfframpResponse,
   OfframpCountry,
   ProviderRate,
+  ProviderLimitsResponse,
   QuoteStatusResponse,
   UserLimitsResponse,
   VerifyBankAccountResponse,
 } from "@/types/offramp";
-import type { BridgeQuote } from "@/services/allbridge.service";
 import { createAbortError } from "@/utils/retry";
+
+/** Quote shape produced by the mock bridge adapter. */
+export interface BridgeQuote {
+  sendAmount: string;
+  receiveAmount: string;
+  bridgeFee: string;
+  estimatedTimeMinutes: number;
+}
 import { calculateOfframpFee, calculateOfframpFiatAmount } from "@/utils/offramp-fee";
 
 const DEFAULT_DELAYS = {
@@ -340,6 +348,28 @@ export const mockOfframpService = {
         dailyUsed: mockDailyUsed,
         remainingDaily: mockDailyLimit - mockDailyUsed,
         tier: "standard",
+      },
+    };
+  },
+
+  async getProviderLimits(
+    params: {
+      token: string;
+      country: string;
+      network: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<ProviderLimitsResponse> {
+    await sleep(getMockDelay("sync"), signal);
+    const minimumAmount = params.country === "NG" ? 10 : 5;
+    return {
+      success: true,
+      data: {
+        minimumAmount,
+        providers: [
+          { providerId: "cashwyre", minimumAmount },
+          { providerId: "autoramp", minimumAmount },
+        ],
       },
     };
   },

@@ -1,5 +1,66 @@
 # Fundable Stellar
 
+## 🚀 Quickstart (5 Minutes)
+
+Get the Fundable Stellar client running on the Stellar testnet in about five minutes.
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org) v18+
+- [pnpm](https://pnpm.io) v8+ (`npm install -g pnpm`)
+- [Rust](https://rustup.rs) (for building the Soroban contracts)
+- [Soroban CLI / stellar-cli](https://soroban.stellar.org/docs/getting-started/setup) v25.0.0+
+
+  ```bash
+  cargo install --locked stellar-cli@25.0.0
+  ```
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Fundable-Protocol/stellar_client_os.git
+cd stellar_client_os
+```
+
+### 2. Install dependencies
+
+```bash
+pnpm install
+```
+
+### 3. Fund a Stellar testnet account
+
+Create a testnet identity and fund it with test XLM using Friendbot:
+
+```bash
+stellar keys generate my-account --network testnet --fund
+```
+
+This creates a keypair and funds it instantly on the SDF testnet. Copy the generated secret key into your environment:
+
+```bash
+cp .env.example .env
+# Set STELLAR_SECRET_KEY in .env to the secret printed above
+```
+
+### 4. Build the smart contracts
+
+```bash
+pnpm build:contracts
+# or, using cargo directly:
+# cd contracts && cargo build --release
+```
+
+### 5. Run the frontend
+
+```bash
+pnpm dev
+```
+
+The web app starts at http://localhost:3000. Connect a wallet (e.g. Freighter) to interact with the contracts on testnet.
+
+> Need more detail? See [docs/getting-started.md](docs/getting-started.md) and [scripts/README.md](scripts/README.md).
+
 Stellar client and smart contracts for the Fundable Protocol – a decentralized payment platform enabling seamless Web3 payments, streaming, and subscriptions on the Stellar blockchain.
 
 ## 🏗️ Project Structure
@@ -20,6 +81,7 @@ stellar_client/
 ├── docs/                      # Project documentation
 │   ├── architecture.md
 │   ├── getting-started.md     # Project setup documentation
+│   ├── webhooks.md            # Webhook system documentation
 │   ├── contracts/             # Contracts documentation
 │   │   ├── distributor.md
 │   │   └── payment-stream.md
@@ -152,6 +214,36 @@ async function createNewStream() {
   console.log(`Stream ID: ${result.result}`);
 }
 ```
+
+### 🔐 S3 Presigned Uploads (Milestone Proof Photos)
+
+`POST /api/presign-upload` generates a short-lived AWS S3 pre-signed PUT URL so clients can upload milestone proof photos directly to a **private** evidence bucket without exposing credentials. Signing uses AWS Signature V4 and is implemented dependency-free in `apps/web/src/lib/s3`.
+
+Request:
+
+```bash
+curl -X POST http://localhost:3000/api/presign-upload \
+  -H "Content-Type: application/json" \
+  -d '{"campaignId":"42","milestoneId":"1","contentType":"image/jpeg"}'
+```
+
+Response (`200`):
+
+```json
+{
+  "url": "https://fundable-evidence.s3.us-east-1.amazonaws.com/evidence/42/1/<uuid>.jpg?X-Amz-Algorithm=...&X-Amz-Signature=...",
+  "key": "evidence/42/1/<uuid>.jpg",
+  "contentType": "image/jpeg",
+  "expiresAt": 1712000000,
+  "requestId": "..."
+}
+```
+
+Then `PUT` the file bytes to `url` with `Content-Type: image/jpeg`. URLs expire after `S3_PRESIGN_EXPIRES_SECONDS` (default `300`).
+
+Allowed content types: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `application/pdf`.
+
+Required environment variables (see `.env.example`): `AWS_REGION`, `AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`; optional `AWS_SESSION_TOKEN` (temporary STS credentials) and `S3_PRESIGN_EXPIRES_SECONDS` (60–900). The IAM user needs only `s3:PutObject` on the evidence bucket.
 
 ## 📦 Packages
 

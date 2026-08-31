@@ -5,7 +5,8 @@ import { Horizon } from '@stellar/stellar-sdk';
 import { DistributorClient } from '../../../../packages/sdk/src/DistributorClient';
 import { useWallet } from '@/providers/StellarWalletProvider';
 import { notify } from '@/utils/notification';
-import { DISTRIBUTOR_CONTRACT_ID, SOROBAN_RPC_URL, NETWORK_PASSPHRASE } from '@/lib/constants';
+import { DISTRIBUTOR_CONTRACT_ID } from '@/lib/env';
+import { SOROBAN_RPC_URL, NETWORK_PASSPHRASE } from '@/lib/constants';
 import { amountToStroops } from '@/utils/amount-validation';
 import { getStellarServerOptions } from '@/utils/rpc-connection-options';
 import type { DistributionState } from '@/types/distribution';
@@ -155,7 +156,6 @@ export function useDistributionTransaction() {
         return false;
       }
 
-      let transactionHash: string;
       // Calculate total amount in stroops (7 decimal places)
       let totalStroops: bigint;
       let amountsStroops: bigint[] = [];

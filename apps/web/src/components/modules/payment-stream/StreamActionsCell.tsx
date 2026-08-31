@@ -16,10 +16,16 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
+    DropdownMenuPortal,
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { StreamRecord } from "@/lib/validations";
 import { STELLAR_EXPERT_URL } from "@/lib/constants";
 import { WithdrawStreamModal } from "./WithdrawStreamModal";
@@ -61,11 +67,12 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
     const handleOpenDeposit = () => setIsDepositOpen(true);
 
     const handlePause = async () => {
-        if (!signTransaction) return;
+        if (!address || !signTransaction) return;
         setIsLoading(true);
         try {
             await pauseStream({
                 id: stream.id,
+                address: address!,
                 signTransaction,
             });
             toast.success("Stream paused successfully");
@@ -78,11 +85,12 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
     };
 
     const handleResume = async () => {
-        if (!signTransaction) return;
+        if (!address || !signTransaction) return;
         setIsLoading(true);
         try {
             await resumeStream({
                 id: stream.id,
+                address: address!,
                 signTransaction,
             });
             toast.success("Stream resumed successfully");
@@ -95,13 +103,14 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
     };
 
     const handleCancel = async () => {
-        if (!signTransaction) return;
+        if (!address || !signTransaction) return;
         if (!confirm("Are you sure you want to cancel this stream? This action cannot be undone.")) return;
 
         setIsLoading(true);
         try {
             await cancelStream({
                 id: stream.id,
+                address: address!,
                 signTransaction,
             });
             toast.success("Stream canceled successfully");
@@ -115,7 +124,6 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
 
     const isActive = stream.status === "Active";
     const isPaused = stream.status === "Paused";
-    const canManage = isActive || isPaused;
 
     return (
         <>
@@ -125,6 +133,7 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
                         <MoreHorizontal className="h-4 w-4 text-white" aria-hidden="true" />
                     </Button>
                 </DropdownMenuTrigger>
+                <DropdownMenuPortal>
                 <DropdownMenuContent align="end">
                     {isRecipient && isActive && (
                         <DropdownMenuItem
@@ -166,14 +175,31 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
                         </DropdownMenuItem>
                     )}
 
-                    {isSender && (isActive || isPaused) && stream.cancelable && (
-                        <DropdownMenuItem
-                            className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
-                            onClick={handleCancel}
-                        >
-                            <XCircle className="mr-2 h-4 w-4" />
-                            Cancel Stream
-                        </DropdownMenuItem>
+                    {isSender && (isActive || isPaused) && (
+                        stream.cancelable ? (
+                            <DropdownMenuItem
+                                className="cursor-pointer text-red-500 focus:text-red-500 focus:bg-red-500/10"
+                                onClick={handleCancel}
+                            >
+                                <XCircle className="mr-2 h-4 w-4" />
+                                Cancel Stream
+                            </DropdownMenuItem>
+                        ) : (
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <DropdownMenuItem
+                                        className="text-red-500/50 cursor-not-allowed"
+                                        disabled
+                                    >
+                                        <XCircle className="mr-2 h-4 w-4" />
+                                        Cancel Stream
+                                    </DropdownMenuItem>
+                                </TooltipTrigger>
+                                <TooltipContent side="left">
+                                    This stream was configured as non-cancelable
+                                </TooltipContent>
+                            </Tooltip>
+                        )
                     )}
 
                     {isSender && (
@@ -203,6 +229,7 @@ export default function StreamActionsCell({ stream }: StreamActionsCellProps) {
                         Copy Stream ID
                     </DropdownMenuItem>
                 </DropdownMenuContent>
+                </DropdownMenuPortal>
             </DropdownMenu>
 
             <WithdrawStreamModal

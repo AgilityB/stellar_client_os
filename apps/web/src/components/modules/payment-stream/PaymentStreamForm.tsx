@@ -6,6 +6,7 @@ import InputWithLabel from "@/components/molecules/InputWithLabel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Loader2, Lock, AlertCircle, Calendar } from "lucide-react";
+import { useWallet } from "@/providers/StellarWalletProvider";
 import {
   validateEndTime,
   calculateEndTime,
@@ -34,6 +35,8 @@ interface StreamFormProps {
   isSubmitting: boolean;
   balanceError?: string | null;
   insufficientBalance?: boolean;
+  maxBalance?: string | null;
+  onMaxClick?: () => void;
 }
 
 export function PaymentStreamForm({
@@ -45,11 +48,19 @@ export function PaymentStreamForm({
   isSubmitting,
   balanceError,
   insufficientBalance,
+  maxBalance,
+  onMaxClick,
 }: StreamFormProps) {
+  const { address } = useWallet();
+
   const booleanOptions = [
     { label: "Yes", value: "true" },
     { label: "No", value: "false" },
   ];
+
+  const isSelfRecipient = Boolean(
+    address && streamData.recipient && streamData.recipient.trim() === address
+  );
 
   const handleStreamDataChange = (
     key: keyof StreamFormData,
@@ -80,6 +91,7 @@ export function PaymentStreamForm({
   const isFormValid =
     !isSubmitting &&
     !insufficientBalance &&
+    !isSelfRecipient &&
     streamData.name &&
     streamData.durationValue &&
     streamData.recipient &&
@@ -97,16 +109,29 @@ export function PaymentStreamForm({
             value={streamData.name}
             onChange={(e) => handleStreamDataChange("name", e.target.value)}
           />
-          <InputWithLabel
-            title="Total Amount"
-            name="amount"
-            type="number"
-            step="0.0000001"
-            placeholder="Enter total amount to stream"
-            value={streamData.amount}
-            onChange={(e) => handleStreamDataChange("amount", e.target.value)}
-            errorMessage={balanceError ?? undefined}
-          />
+          <div className="relative">
+            <InputWithLabel
+              title="Total Amount"
+              name="amount"
+              type="number"
+              step="0.0000001"
+              placeholder="Enter total amount to stream"
+              value={streamData.amount}
+              onChange={(e) => handleStreamDataChange("amount", e.target.value)}
+              errorMessage={balanceError ?? undefined}
+              className="pr-16"
+            />
+            {maxBalance && onMaxClick && (
+              <button
+                type="button"
+                onClick={onMaxClick}
+                aria-label={`Fill maximum ${streamData.token} amount`}
+                className="absolute right-3 top-9 -translate-y-1/2 text-purple-400 text-sm font-medium hover:text-purple-300 transition-colors"
+              >
+                MAX
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid md:grid-cols-2 gap-4 sm:gap-6 my-6">
@@ -149,6 +174,11 @@ export function PaymentStreamForm({
             onChange={(e) =>
               handleStreamDataChange("recipient", e.target.value)
             }
+            errorMessage={
+              isSelfRecipient
+                ? "Recipient cannot be sender address"
+                : undefined
+            }
           />
         </div>
 
@@ -162,7 +192,6 @@ export function PaymentStreamForm({
                 className={`border-zinc-700 bg-zinc-800 rounded h-12 placeholder:text-zinc-500 text-white ${
                   endTimeValidation.error ? "border-red-500" : ""
                 }`}
-                maxLength={streamData.duration === "hour" ? 1 : 3}
                 placeholder="Value eg. 1"
                 value={streamData.durationValue}
                 onChange={(e) =>
@@ -171,19 +200,28 @@ export function PaymentStreamForm({
               />
               <AppSelect
                 className="h-12"
-                setValue={(value) => handleStreamDataChange("duration", value)}
+                setValue={(value) => {
+                  setStreamData((prev) => ({
+                    ...prev,
+                    duration: value,
+                    durationValue: prev.durationValue,
+                  }));
+                }}
+                value={streamData.duration}
                 options={durationOptions}
                 placeholder={streamData.duration || "Pick a duration"}
               />
             </div>
 
-            {/* End Time Validation Error */}
-            {endTimeValidation.error && (
-              <div className="mt-2 flex items-start gap-2 text-red-400 text-sm">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <span>{endTimeValidation.error}</span>
-              </div>
-            )}
+            <div aria-live="polite" aria-atomic="true">
+              {/* End Time Validation Error */}
+              {endTimeValidation.error && (
+                <div className="mt-2 flex items-start gap-2 text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <span>{endTimeValidation.error}</span>
+                </div>
+              )}
+            </div>
 
             {/* End Time Preview */}
             {endTimeValidation.isValid && endTimeValidation.endTime && (

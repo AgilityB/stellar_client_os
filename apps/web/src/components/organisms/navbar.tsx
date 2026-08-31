@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { ConnectButton } from "./connect-button";
 import { NetworkSwitcher } from "./network-switcher";
 
@@ -28,6 +27,12 @@ export function Navbar() {
             className="hover:text-white transition-colors uppercase pb-1 border-b-2 border-transparent hover:border-white/50"
           >
             Balances
+          </Link>
+          <Link
+            href="/social"
+            className="hover:text-white transition-colors uppercase pb-1 border-b-2 border-transparent hover:border-white/50"
+          >
+            Social
           </Link>
           <Link
             href="#"

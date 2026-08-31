@@ -11,7 +11,6 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:3000',
     trace: 'on-first-retry',
-    // Inject mock wallet state into every page before scripts run
     storageState: undefined,
   },
 
