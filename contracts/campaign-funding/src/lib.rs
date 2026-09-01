@@ -1327,6 +1327,23 @@ mod tests {
     }
 
     #[test]
+    fn test_create_campaign_allows_optional_zero_insurance_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+        let creator = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let (token, _, token_admin_client) = create_token(&env, &token_admin);
+        token_admin_client.mint(&creator, &500);
+
+        let id = client.create_campaign(&creator, &token, &10_000, &5_000, &2_000, &0);
+        assert_eq!(id, 1);
+        assert_eq!(client.get_campaign(&id).status, CampaignStatus::Active);
+        assert_eq!(client.get_campaign_count(), 1);
+    }
+
+    #[test]
     fn test_create_campaign_ids_increment() {
         let env = Env::default();
         env.mock_all_auths();
