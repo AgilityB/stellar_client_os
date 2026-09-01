@@ -1299,15 +1299,36 @@ impl CampaignFundingContract {
 
     /// Compute the protocol fee for `amount` using the stored fee rate.
     ///
-    /// Uses the same split-calculation as the payment-stream contract to
-    /// preserve precision without overflow.
+    /// The fee is rounded **up** (ceiling division) so that the full
+    /// fractional entitlement goes to the fee collector rather than being
+    /// silently discarded.  Without ceiling rounding the remainder term
+    /// `(r * rate) / 10_000` (where `r = amount % 10_000`) would floor,
+    /// causing the fee collector to lose up to 1 base-unit per claim while
+    /// the creator keeps the dust instead.
+    ///
+    /// Formula: `ceil(amount * rate / 10_000)`
+    /// Implemented without overflow via the split identity:
+    ///   `amount = q * 10_000 + r`
+    ///   `ceil(r * rate / 10_000) = (r * rate + 9_999) / 10_000`
     fn calculate_fee(env: &Env, amount: i128) -> i128 {
         let fee_rate: u32 = env.storage().instance().get(&DataKey::FeeRate).unwrap_or(0);
         if fee_rate == 0 || amount <= 0 {
             return 0;
         }
         let rate = fee_rate as i128;
-        (amount / 10_000) * rate + ((amount % 10_000) * rate) / 10_000
+        let q = amount / 10_000;
+        let r = amount % 10_000;
+        // Ceiling division for the remainder term: ceil(r * rate / 10_000)
+        let remainder_fee = r
+            .checked_mul(rate)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+            .checked_add(9_999)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+            / 10_000;
+        q.checked_mul(rate)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+            .checked_add(remainder_fee)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
     }
 
     /// Compute the 10% reserve for tree replacement.
@@ -2280,9 +2301,9 @@ mod tests {
         client.trigger_expiry(&id);
         client.claim_funds(&id);
 
-        // fee = 9_999 * 100 / 10_000 = 99 (integer division); net = 9_900.
-        assert_eq!(token_client.balance(&creator), 9_900);
-        assert_eq!(token_client.balance(&fee_collector), 99);
+        // fee = ceil(9_999 * 100 / 10_000) = ceil(99.99) = 100; net = 9_899.
+        assert_eq!(token_client.balance(&creator), 9_899);
+        assert_eq!(token_client.balance(&fee_collector), 100);
     }
 
     // -----------------------------------------------------------------------
