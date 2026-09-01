@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CampaignSponsorWall } from "@/components/modules/campaign/sponsor-wall/CampaignSponsorWall";
 import { CampaignCollaboration } from "@/components/modules/campaign/collaboration/CampaignCollaboration";
+import { BackerCommunity } from "@/components/modules/campaign/community/BackerCommunity";
 
 const translations = {
   es: {
@@ -186,6 +187,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       </div>
 
       {/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722) */}
+      {/* Backer community spaces (#788) render inside the overview sidebar. */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
         <TabsList className="grid w-full grid-cols-3 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
           <TabsTrigger value="overview" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
@@ -244,6 +246,8 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                   </div>
                 </div>
               </div>
+
+              <BackerCommunity campaignId={campaign.id} />
             </div>
           </div>
         </TabsContent>
