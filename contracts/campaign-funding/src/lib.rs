@@ -1,6 +1,7 @@
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env,
+    Symbol,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,12 @@ pub enum DataKey {
     /// Per-contributor escrow balance keyed by `(campaign_id, contributor)`
     /// (persistent storage).
     Contribution(u64, Address),
+    /// Address of the payment-stream contract used for reward streaming
+    /// (instance storage).
+    StreamContract,
+    /// Tracks whether a reward stream has already been created for a given
+    /// `(campaign_id, contributor)` pair (persistent storage).
+    RewardStreamed(u64, Address),
 }
 
 /// Current lifecycle state of a campaign.
@@ -125,6 +132,24 @@ pub struct RefundIssuedEvent {
     pub amount: i128,
 }
 
+/// Emitted when a reward stream is created for a sponsor.
+#[contracttype]
+#[derive(Clone)]
+pub struct SponsorRewardStreamedEvent {
+    /// Campaign whose funds are being streamed back to a sponsor.
+    pub campaign_id: u64,
+    /// Contributor receiving the reward stream.
+    pub contributor: Address,
+    /// Total token amount being streamed.
+    pub amount: i128,
+    /// ID of the newly created payment stream.
+    pub stream_id: u64,
+    /// Stream start timestamp (unix seconds).
+    pub start_time: u64,
+    /// Stream end timestamp (unix seconds) — 12 months after start.
+    pub end_time: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
@@ -168,6 +193,15 @@ pub enum Error {
     /// The contribution would push `total_raised` above the hard cap
     /// (`target_amount`).
     TargetExceeded = 16,
+    /// `stream_sponsor_rewards` was called but the stream contract address
+    /// has not been configured via `set_stream_contract`.
+    StreamContractNotSet = 17,
+    /// A reward stream has already been created for this contributor on this
+    /// campaign; duplicate streams are prevented.
+    RewardsAlreadyStreamed = 18,
+    /// The campaign must be in the `Claimed` state before reward streams can
+    /// be created (i.e. the creator must have called `claim_funds` first).
+    CampaignNotClaimed = 19,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +214,8 @@ const MAX_FEE: u32 = 500;
 const LEDGER_THRESHOLD: u32 = 518_400;
 /// Storage TTL bump: ~31 days at 5 s/ledger.
 const LEDGER_BUMP: u32 = 535_680;
+/// Duration of a reward stream in seconds: 12 months ≈ 365 days.
+const TWELVE_MONTHS_SECS: u64 = 365 * 24 * 60 * 60;
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -539,6 +575,152 @@ impl CampaignFundingContract {
     }
 
     // -----------------------------------------------------------------------
+    // Reward streaming
+    // -----------------------------------------------------------------------
+
+    /// Stream a sponsor's reward back to them over 12 months after campaign
+    /// completion.
+    ///
+    /// Instead of a lump-sum distribution at campaign end, sponsors (i.e.
+    /// contributors) receive their reward via a linear payment stream that
+    /// vests continuously over the 12 months following the current ledger
+    /// time.  The campaign contract acts as the stream `sender`, transferring
+    /// the sponsor's pro-rata contribution amount through the configured
+    /// payment-stream contract.
+    ///
+    /// This function is **permissionless** after `claim_funds` has been
+    /// called — anyone may initiate the reward stream for any contributor.
+    /// This ensures sponsors are not dependent on a centralised party to
+    /// trigger their stream.
+    ///
+    /// # How the reward amount is determined
+    ///
+    /// The reward equals the contributor's recorded escrow balance for the
+    /// campaign (`Contribution(campaign_id, contributor)`).  These tokens
+    /// have already been transferred to the contract during `contribute`, so
+    /// the contract holds the funds and can approve a transfer to the stream.
+    ///
+    /// > Note: `claim_funds` sends the *creator's net proceeds* out of the
+    /// > contract, **not** the contributors' balances.  The contributor
+    /// > escrow entries remain intact and are used here.
+    ///
+    /// # Arguments
+    /// * `campaign_id`  — The completed (Claimed) campaign.
+    /// * `contributor`  — Sponsor address to receive the reward stream.
+    ///
+    /// # Returns
+    /// The `u64` stream ID assigned by the payment-stream contract.
+    ///
+    /// # Errors
+    /// * [`Error::CampaignNotFound`]       — no campaign with this ID.
+    /// * [`Error::CampaignNotClaimed`]     — campaign has not yet been claimed
+    ///   by the creator.
+    /// * [`Error::NoContributionFound`]    — contributor has no escrow balance.
+    /// * [`Error::StreamContractNotSet`]   — admin has not called
+    ///   `set_stream_contract`.
+    /// * [`Error::RewardsAlreadyStreamed`]  — a stream was already created for
+    ///   this contributor on this campaign.
+    pub fn stream_sponsor_rewards(
+        env: Env,
+        campaign_id: u64,
+        contributor: Address,
+    ) -> u64 {
+        let campaign = Self::load_campaign(&env, campaign_id);
+
+        // Reward streams are only valid after the creator has claimed funds.
+        if campaign.status != CampaignStatus::Claimed {
+            panic_with_error!(&env, Error::CampaignNotClaimed);
+        }
+
+        // Retrieve the contributor's escrowed balance (reward amount).
+        let contrib_key = DataKey::Contribution(campaign_id, contributor.clone());
+        let reward_amount: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+        if reward_amount <= 0 {
+            panic_with_error!(&env, Error::NoContributionFound);
+        }
+
+        // Guard against duplicate reward streams.
+        let streamed_key = DataKey::RewardStreamed(campaign_id, contributor.clone());
+        if env.storage().persistent().get(&streamed_key).unwrap_or(false) {
+            panic_with_error!(&env, Error::RewardsAlreadyStreamed);
+        }
+
+        // Ensure the stream contract has been configured.
+        let stream_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::StreamContract)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::StreamContractNotSet));
+
+        // Build the 12-month stream window starting now.
+        let start_time: u64 = env.ledger().timestamp();
+        let end_time: u64 = start_time
+            .checked_add(TWELVE_MONTHS_SECS)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+
+        // The campaign contract is the stream sender; it must approve the
+        // payment-stream contract to pull `reward_amount` of the campaign
+        // token.
+        let token_client = token::Client::new(&env, &campaign.token);
+        token_client.approve(
+            &env.current_contract_address(),
+            &stream_contract,
+            &reward_amount,
+            &(env.ledger().sequence() + LEDGER_BUMP),
+        );
+
+        // Cross-contract call: invoke `create_stream` on the payment-stream
+        // contract.  The campaign contract address is the sender so that the
+        // stream contract pulls from this contract's token allowance.
+        let stream_id: u64 = env.invoke_contract(
+            &stream_contract,
+            &Symbol::new(&env, "create_stream"),
+            soroban_sdk::vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                contributor.clone().into_val(&env),
+                campaign.token.clone().into_val(&env),
+                reward_amount.into_val(&env),
+                0i128.into_val(&env),
+                start_time.into_val(&env),
+                end_time.into_val(&env),
+            ],
+        );
+
+        // Mark the reward as streamed before returning (check-effects).
+        env.storage().persistent().set(&streamed_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&streamed_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events().publish(
+            ("SponsorRewardStreamed", campaign_id),
+            SponsorRewardStreamedEvent {
+                campaign_id,
+                contributor,
+                amount: reward_amount,
+                stream_id,
+                start_time,
+                end_time,
+            },
+        );
+
+        stream_id
+    }
+
+    /// Check whether a reward stream has already been created for a given
+    /// sponsor on a specific campaign.
+    ///
+    /// Returns `true` if `stream_sponsor_rewards` was previously called and
+    /// succeeded for this `(campaign_id, contributor)` pair.
+    pub fn is_reward_streamed(env: Env, campaign_id: u64, contributor: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RewardStreamed(campaign_id, contributor))
+            .unwrap_or(false)
+    }
+
+    // -----------------------------------------------------------------------
     // Queries
     // -----------------------------------------------------------------------
 
@@ -585,6 +767,11 @@ impl CampaignFundingContract {
             .unwrap()
     }
 
+    /// Return the configured payment-stream contract address, if any.
+    pub fn get_stream_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::StreamContract)
+    }
+
     // -----------------------------------------------------------------------
     // Admin setters
     // -----------------------------------------------------------------------
@@ -625,6 +812,27 @@ impl CampaignFundingContract {
         env.storage()
             .instance()
             .set(&DataKey::FeeCollector, &new_fee_collector);
+        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// Set the payment-stream contract address used by `stream_sponsor_rewards`.
+    ///
+    /// Requires admin authorisation.  This must be called once after
+    /// deployment to enable the reward-streaming feature.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] — contract not yet initialised.
+    pub fn set_stream_contract(env: Env, stream_contract: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StreamContract, &stream_contract);
         env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
     }
 
@@ -1496,5 +1704,253 @@ mod tests {
         // fee = 9_999 * 100 / 10_000 = 99 (integer division); net = 9_900.
         assert_eq!(token_client.balance(&creator), 9_900);
         assert_eq!(token_client.balance(&fee_collector), 99);
+    }
+
+    // -----------------------------------------------------------------------
+    // stream_sponsor_rewards
+    // -----------------------------------------------------------------------
+
+    /// Helper: deploy the payment-stream contract and return its address and
+    /// client.  Uses the same workspace crate.
+    fn setup_stream_contract(env: &Env) -> Address {
+        use contracts_payment_stream::PaymentStreamContract;
+        let stream_id = env.register(PaymentStreamContract, ());
+        let stream_client =
+            contracts_payment_stream::PaymentStreamContractClient::new(env, &stream_id);
+        let stream_admin = Address::generate(env);
+        let stream_fee_collector = Address::generate(env);
+        stream_client.initialize(&stream_admin, &stream_fee_collector, &0u32);
+        stream_id
+    }
+
+    #[test]
+    fn test_set_stream_contract() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_, client, _, _) = setup_contract(&env);
+        let stream_addr = Address::generate(&env);
+
+        assert_eq!(client.get_stream_contract(), None);
+        client.set_stream_contract(&stream_addr);
+        assert_eq!(client.get_stream_contract(), Some(stream_addr));
+    }
+
+    #[test]
+    #[should_panic(expected = "StreamContractNotSet")]
+    fn test_stream_sponsor_rewards_no_stream_contract() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &6_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        // No stream contract set — must panic.
+        client.stream_sponsor_rewards(&id, &contributor);
+    }
+
+    #[test]
+    #[should_panic(expected = "CampaignNotClaimed")]
+    fn test_stream_sponsor_rewards_before_claim() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        let stream_addr = Address::generate(&env);
+        client.set_stream_contract(&stream_addr);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &6_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id); // → Successful, not yet Claimed
+
+        // Should fail because status is Successful, not Claimed.
+        client.stream_sponsor_rewards(&id, &contributor);
+    }
+
+    #[test]
+    #[should_panic(expected = "NoContributionFound")]
+    fn test_stream_sponsor_rewards_non_contributor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        let outsider = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        let stream_addr = Address::generate(&env);
+        client.set_stream_contract(&stream_addr);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &6_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        // Outsider has no contribution — must panic.
+        client.stream_sponsor_rewards(&id, &outsider);
+    }
+
+    #[test]
+    fn test_stream_sponsor_rewards_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, token_client, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        // Deploy and wire up the payment-stream contract.
+        let stream_contract_id = env.register(
+            contracts_payment_stream::PaymentStreamContract,
+            (),
+        );
+        let stream_client = contracts_payment_stream::PaymentStreamContractClient::new(
+            &env,
+            &stream_contract_id,
+        );
+        let stream_admin = Address::generate(&env);
+        let stream_fee_collector = Address::generate(&env);
+        stream_client.initialize(&stream_admin, &stream_fee_collector, &0u32);
+        client.set_stream_contract(&stream_contract_id);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &6_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        // Stream the sponsor's reward.
+        let stream_id = client.stream_sponsor_rewards(&id, &contributor);
+
+        // The stream was created in the payment-stream contract.
+        let stream = stream_client.get_stream(&stream_id);
+        assert_eq!(stream.sender, client.address);
+        assert_eq!(stream.recipient, contributor);
+        assert_eq!(stream.token, token_addr);
+        assert_eq!(stream.total_amount, 6_000);
+        // end_time should be ~12 months after now (3_000).
+        assert_eq!(stream.end_time, 3_000 + TWELVE_MONTHS_SECS);
+
+        // is_reward_streamed guard is set.
+        assert!(client.is_reward_streamed(&id, &contributor));
+
+        // Contribution record still exists (it's the reward principal, not
+        // cleared until the stream pays out).
+        assert_eq!(client.get_contribution(&id, &contributor), 6_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "RewardsAlreadyStreamed")]
+    fn test_stream_sponsor_rewards_duplicate_prevented() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contributor = Address::generate(&env);
+        token_admin_client.mint(&contributor, &10_000);
+
+        let stream_contract_id = env.register(
+            contracts_payment_stream::PaymentStreamContract,
+            (),
+        );
+        let stream_client = contracts_payment_stream::PaymentStreamContractClient::new(
+            &env,
+            &stream_contract_id,
+        );
+        let stream_admin = Address::generate(&env);
+        let stream_fee_collector = Address::generate(&env);
+        stream_client.initialize(&stream_admin, &stream_fee_collector, &0u32);
+        client.set_stream_contract(&stream_contract_id);
+
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contributor, &id, &6_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        client.stream_sponsor_rewards(&id, &contributor); // First call — OK.
+        client.stream_sponsor_rewards(&id, &contributor); // Must panic.
+    }
+
+    #[test]
+    fn test_stream_sponsor_rewards_multiple_sponsors() {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_time(&env, 1_000);
+        let (_, client, _, _) = setup_contract(&env);
+
+        let token_admin = Address::generate(&env);
+        let (token_addr, _, token_admin_client) = create_token(&env, &token_admin);
+        let creator = Address::generate(&env);
+        let contrib1 = Address::generate(&env);
+        let contrib2 = Address::generate(&env);
+        token_admin_client.mint(&contrib1, &4_000);
+        token_admin_client.mint(&contrib2, &4_000);
+
+        let stream_contract_id = env.register(
+            contracts_payment_stream::PaymentStreamContract,
+            (),
+        );
+        let stream_client = contracts_payment_stream::PaymentStreamContractClient::new(
+            &env,
+            &stream_contract_id,
+        );
+        let stream_admin = Address::generate(&env);
+        let stream_fee_collector = Address::generate(&env);
+        stream_client.initialize(&stream_admin, &stream_fee_collector, &0u32);
+        client.set_stream_contract(&stream_contract_id);
+
+        // Campaign needs min 5_000; both contribute 4_000 each → 8_000 total.
+        let id = client.create_campaign(&creator, &token_addr, &10_000, &5_000, &2_000);
+        client.contribute(&contrib1, &id, &4_000);
+        client.contribute(&contrib2, &id, &4_000);
+        set_time(&env, 3_000);
+        client.trigger_expiry(&id);
+        client.claim_funds(&id);
+
+        let sid1 = client.stream_sponsor_rewards(&id, &contrib1);
+        let sid2 = client.stream_sponsor_rewards(&id, &contrib2);
+
+        // Both streams created, each for their own contribution amount.
+        let s1 = stream_client.get_stream(&sid1);
+        let s2 = stream_client.get_stream(&sid2);
+        assert_eq!(s1.total_amount, 4_000);
+        assert_eq!(s2.total_amount, 4_000);
+        assert_eq!(s1.recipient, contrib1);
+        assert_eq!(s2.recipient, contrib2);
+
+        assert!(client.is_reward_streamed(&id, &contrib1));
+        assert!(client.is_reward_streamed(&id, &contrib2));
     }
 }
