@@ -78,9 +78,12 @@ pub enum CampaignStatus {
 pub struct Campaign {
     /// Unique numeric identifier assigned at creation.
     pub id: u64,
-    /// Address that created the campaign and will receive the proceeds on
-    /// success.
+    /// Address that created the campaign and remains the primary owner.
     pub creator: Address,
+    /// All campaign owners in payout order.
+    pub creators: Vec<Address>,
+    /// Revenue shares in basis points, aligned with `creators`.
+    pub revenue_shares: Vec<u32>,
     /// Stellar asset contract address of the funding token.
     pub token: Address,
     /// Hard cap: the maximum amount the campaign may raise.  Once
@@ -275,7 +278,7 @@ pub enum Error {
     /// (`target_amount`).
     TargetExceeded = 16,
     /// The supplied deadline exceeds the maximum allowed duration of 180 days.
-    DeadlineTooFar = 17,
+    DeadlineTooFar = 23,
     /// The campaign is not in the `VerificationFailed` state.
     CampaignNotVerificationFailed = 18,
     /// The insurance pool fee rate exceeds the protocol maximum.
@@ -406,8 +409,39 @@ impl CampaignFundingContract {
         deadline: u64,
         insurance_fee: i128,
     ) -> u64 {
+        let mut creators = Vec::new(&env);
+        creators.push_back(creator);
+        let mut revenue_shares = Vec::new(&env);
+        revenue_shares.push_back(10_000);
+        Self::create_campaign_with_creators(
+            env,
+            creators,
+            revenue_shares,
+            token,
+            target_amount,
+            min_target,
+            deadline,
+            insurance_fee,
+        )
+    }
+
+    /// Create a campaign with multiple owners and proportional revenue shares.
+    /// Every creator authorises the transaction; shares are basis points totaling 10,000.
+    pub fn create_campaign_with_creators(
+        env: Env,
+        creators: Vec<Address>,
+        revenue_shares: Vec<u32>,
+        token: Address,
+        target_amount: i128,
+        min_target: i128,
+        deadline: u64,
+        insurance_fee: i128,
+    ) -> u64 {
         Self::assert_initialized(&env);
-        creator.require_auth();
+        Self::validate_creators(&env, &creators, &revenue_shares);
+        for owner in creators.iter() {
+            owner.require_auth();
+        }
 
         if target_amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
@@ -425,16 +459,7 @@ impl CampaignFundingContract {
         if insurance_fee <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-
-        // Transfer the insurance fee from the creator to the contract's
-        // insurance pool and record the pool balance.
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&creator, &env.current_contract_address(), &insurance_fee);
-
-        let pool_key = DataKey::InsurancePool(token.clone());
-        let mut pool_balance: i128 = env.storage().instance().get(&pool_key).unwrap_or(0);
-        pool_balance += insurance_fee;
-        env.storage().instance().set(&pool_key, &pool_balance);
+        let primary_creator = creators.get(0).unwrap();
 
         let mut count: u64 = env
             .storage()
@@ -452,6 +477,20 @@ impl CampaignFundingContract {
             panic_with_error!(&env, Error::ContractFull);
         }
         count += 1;
+
+        // Transfer the insurance fee from the primary creator to the contract's
+        // insurance pool and record the pool balance.
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(
+            &primary_creator,
+            &env.current_contract_address(),
+            &insurance_fee,
+        );
+
+        let pool_key = DataKey::InsurancePool(token.clone());
+        let mut pool_balance: i128 = env.storage().instance().get(&pool_key).unwrap_or(0);
+        pool_balance += insurance_fee;
+        env.storage().instance().set(&pool_key, &pool_balance);
         env.storage()
             .instance()
             .set(&DataKey::CampaignCount, &count);
@@ -459,9 +498,12 @@ impl CampaignFundingContract {
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
 
+        let creator = creators.get(0).unwrap();
         let campaign = Campaign {
             id: count,
             creator: creator.clone(),
+            creators: creators.clone(),
+            revenue_shares: revenue_shares.clone(),
             token: token.clone(),
             target_amount,
             min_target,
@@ -744,12 +786,13 @@ impl CampaignFundingContract {
     /// # Errors
     /// * [`Error::CampaignNotSuccessful`] — campaign is not `Successful`.
     /// * [`Error::AlreadyClaimed`]        — funds were already claimed.
-    /// * [`Error::Unauthorized`]          — caller is not the campaign creator.
+    /// * [`Error::Unauthorized`]          — the creator group did not authorise.
     pub fn claim_funds(env: Env, campaign_id: u64) {
         let mut campaign = Self::load_campaign(&env, campaign_id);
 
-        campaign.creator.require_auth();
-
+        for owner in campaign.creators.iter() {
+            owner.require_auth();
+        }
         if campaign.status == CampaignStatus::Claimed {
             panic_with_error!(&env, Error::AlreadyClaimed);
         }
@@ -1097,6 +1140,42 @@ impl CampaignFundingContract {
         Self::load_campaign(&env, campaign_id)
     }
 
+    /// Add a co-creator before a campaign succeeds. All current creators and
+    /// the new owner must authorise the change.
+    pub fn add_creator(env: Env, campaign_id: u64, creator: Address, share: u32) {
+        let mut campaign = Self::load_campaign(&env, campaign_id);
+        for owner in campaign.creators.iter() {
+            owner.require_auth();
+        }
+        if campaign.status != CampaignStatus::Active || share == 0 {
+            panic_with_error!(&env, Error::CampaignNotActive);
+        }
+        if campaign.creators.iter().any(|item| item == creator) {
+            panic_with_error!(&env, Error::CreatorAlreadyExists);
+        }
+        creator.require_auth();
+        let total = campaign
+            .revenue_shares
+            .iter()
+            .fold(0u32, |sum, value| sum + value);
+        if total + share > 10_000 {
+            panic_with_error!(&env, Error::InvalidCreators);
+        }
+        campaign.creators.push_back(creator);
+        campaign.revenue_shares.push_back(share);
+        Self::save_campaign(&env, campaign_id, &campaign);
+    }
+
+    /// Return all campaign owners in payout order.
+    pub fn get_campaign_creators(env: Env, campaign_id: u64) -> Vec<Address> {
+        Self::load_campaign(&env, campaign_id).creators
+    }
+
+    /// Return revenue shares in basis points and payout order.
+    pub fn get_campaign_revenue_shares(env: Env, campaign_id: u64) -> Vec<u32> {
+        Self::load_campaign(&env, campaign_id).revenue_shares
+    }
+
     /// Return the total amount contributed by `contributor` to `campaign_id`.
     ///
     /// Returns `0` if the contributor has no record (including after a
@@ -1233,6 +1312,28 @@ impl CampaignFundingContract {
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
+
+    fn validate_creators(env: &Env, creators: &Vec<Address>, shares: &Vec<u32>) {
+        if creators.len() == 0 || creators.len() != shares.len() {
+            panic_with_error!(env, Error::InvalidCreators);
+        }
+        let mut total = 0u32;
+        for i in 0..creators.len() {
+            let share = shares.get(i).unwrap();
+            if share == 0
+                || creators
+                    .iter()
+                    .skip((i + 1) as usize)
+                    .any(|item| item == creators.get(i).unwrap())
+            {
+                panic_with_error!(env, Error::InvalidCreators);
+            }
+            total = total.checked_add(share).unwrap_or(0);
+        }
+        if total != 10_000 {
+            panic_with_error!(env, Error::InvalidCreators);
+        }
+    }
 
     /// Panic with [`Error::NotInitialized`] if the contract has not been
     /// initialised yet.
@@ -1596,7 +1697,7 @@ mod tests {
                 .set(&DataKey::CampaignCount, &u64::MAX);
         });
 
-        client.create_campaign(&creator, &token, &10_000, &5_000, &2_000);
+        client.create_campaign(&creator, &token, &10_000, &5_000, &2_000, &500);
     }
 
     #[test]
@@ -1693,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #17)")]
+    #[should_panic(expected = "Error(Contract, #23)")]
     fn test_create_campaign_deadline_exceeds_180_days_fails() {
         let env = Env::default();
         env.mock_all_auths();
