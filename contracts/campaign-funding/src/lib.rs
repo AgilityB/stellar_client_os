@@ -4,6 +4,18 @@ use soroban_sdk::{
     Address, Env, Vec,
 };
 
+/// Optional `Address` wrapper suitable for use inside `#[contracttype]` structs.
+///
+/// Soroban's `#[contracttype]` macro does not support generic type parameters,
+/// so we cannot use `Option<Address>` directly.  This enum provides the same
+/// semantics.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OptionalAddress {
+    None,
+    Some(Address),
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -86,6 +98,12 @@ pub struct Campaign {
     pub total_raised: i128,
     /// Current lifecycle state.
     pub status: CampaignStatus,
+    /// Unix timestamp (seconds) when the campaign was created.
+    /// Used to enforce the 90-day planter-assignment window.
+    pub created_at: u64,
+    /// Address of the planter assigned to this campaign, if any.
+    /// `OptionalAddress::None` means no planter has been assigned yet.
+    pub planter: OptionalAddress,
 }
 
 /// A single co-creator on a campaign team and the share of the proceeds they
@@ -397,7 +415,8 @@ impl CampaignFundingContract {
         if min_target <= 0 || min_target > target_amount {
             panic_with_error!(&env, Error::InvalidTarget);
         }
-        if deadline <= env.ledger().timestamp() {
+        let now = env.ledger().timestamp();
+        if deadline <= now {
             panic_with_error!(&env, Error::InvalidDeadline);
         }
         if deadline > env.ledger().timestamp() + MAX_CAMPAIGN_DURATION_SECONDS {
@@ -449,6 +468,8 @@ impl CampaignFundingContract {
             deadline,
             total_raised: 0,
             status: CampaignStatus::Active,
+            created_at: now,
+            planter: OptionalAddress::None,
         };
 
         Self::save_campaign(&env, count, &campaign);
@@ -1517,6 +1538,9 @@ mod tests {
         assert_eq!(campaign.deadline, 2_000);
         assert_eq!(campaign.total_raised, 0);
         assert_eq!(campaign.status, CampaignStatus::Active);
+        // New fields: created_at should be set to ledger time; planter should be None.
+        assert_eq!(campaign.created_at, 1_000);
+        assert_eq!(campaign.planter, OptionalAddress::None);
     }
 
     #[test]
