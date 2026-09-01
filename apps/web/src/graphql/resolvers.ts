@@ -1,4 +1,4 @@
-/**
+/*
  * GraphQL Resolvers — Aggregate Funding Analytics (issue #538)
  *
  * Thin resolver layer that delegates to the AnalyticsService.
@@ -6,6 +6,8 @@
  */
 
 import { DefaultStreamDataSource, getAnalyticsService } from "./analytics.service";
+import { getCampaignHealthAssessment, getCampaignRiskAssessment, getCampaignVerificationSummary, queryCampaigns } from "@/services/campaign.service";
+import type { CampaignDataSource, CampaignQueryInput } from "@/services/campaign.service";
 import type {
   RegionFilter,
   CategoryFilter,
@@ -20,6 +22,7 @@ type Network = "testnet" | "mainnet";
 interface ResolverContext {
   /** Optional custom data source — used in tests to inject fixtures. */
   dataSource?: StreamDataSource;
+  campaignDataSource?: CampaignDataSource;
 }
 
 function resolveDataSource(ctx: ResolverContext, fallback?: StreamDataSource): StreamDataSource {
@@ -43,6 +46,50 @@ function paginate<T>(items: T[], pagination?: PaginationInput): T[] {
 export function createResolvers(defaultDataSource?: StreamDataSource) {
   return {
     Query: {
+      campaigns: async (
+        _: unknown,
+        args: {
+          filter?: CampaignQueryInput["filter"];
+          sort?: CampaignQueryInput["sort"];
+          pagination?: PaginationInput;
+          network?: Network;
+        },
+        ctx: ResolverContext,
+      ) => {
+        const campaigns = await queryCampaigns({
+          filter: args.filter,
+          sort: args.sort,
+          limit: args.pagination?.limit,
+          offset: args.pagination?.offset,
+          network: args.network,
+        }, ctx.campaignDataSource);
+        return campaigns.map((campaign) => {
+          const verification = getCampaignVerificationSummary(campaign);
+          const riskAssessment = getCampaignRiskAssessment(campaign);
+          const healthAssessment = getCampaignHealthAssessment(campaign);
+
+          return {
+            ...campaign,
+            verification,
+            verificationStatus: verification.status,
+            verified: verification.isVerified,
+            verificationBadges: verification.badges,
+            riskAssessment,
+            riskScore: riskAssessment.score,
+            riskLevel: riskAssessment.level,
+            riskFlags: riskAssessment.redFlags,
+            healthAssessment,
+            healthScore: healthAssessment.score,
+            healthLevel: healthAssessment.level,
+            createdAt: Math.floor(campaign.createdAt / 1000),
+            updatedAt: Math.floor(campaign.updatedAt / 1000),
+            statusChangedAt: Math.floor(campaign.statusChangedAt / 1000),
+            sponsors: campaign.sponsors.map((sponsor) => ({ ...sponsor, sponsoredAt: Math.floor(sponsor.sponsoredAt / 1000) })),
+            statusHistory: campaign.statusHistory.map((entry) => ({ ...entry, changedAt: Math.floor(entry.changedAt / 1000) })),
+          };
+        });
+      },
+
       trees: async (
         _: unknown,
         args: {
@@ -214,6 +261,42 @@ export function createResolvers(defaultDataSource?: StreamDataSource) {
           args.pagination,
           args.network ?? "testnet"
         );
+      },
+
+      /**
+       * A sponsor's impact (estimated CO2 offset) vs the global average
+       * sponsor, including a percentile ranking (top 10%, etc.).
+       *
+       * @example
+       * query {
+       *   sponsorImpact(address: "GAAA") {
+       *     myVolumeUsd myCo2OffsetKg globalAverageCo2OffsetKg
+       *     globalSponsorCount percentile rankingBand
+       *   }
+       * }
+       */
+      sponsorImpact: async (
+        _: unknown,
+        args: { address: string; network?: Network },
+        ctx: ResolverContext
+      ) => {
+        const service = getAnalyticsService(ctx.dataSource ?? defaultDataSource);
+        return service.getSponsorImpact(args.address, args.network ?? "testnet");
+      },
+    },
+    Mutation: {
+      cloneCampaign: async (
+        _: unknown,
+        args: { id: string; network?: Network },
+        ctx: ResolverContext
+      ) => {
+        const streams = await resolveDataSource(ctx, defaultDataSource).getStreams(args.network ?? "testnet");
+        const campaign = streams.find((stream) => stream.id === args.id);
+        if (!campaign) throw new Error(`Campaign ${args.id} not found`);
+        return {
+          ...campaign,
+          id: `cloned-${campaign.id}`,
+        };
       },
     },
   };
