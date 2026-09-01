@@ -67,6 +67,33 @@ export interface CampaignHealthAssessment {
   breakdown: CampaignHealthBreakdown;
 }
 
+export type CampaignInsuranceClaimStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+export interface CampaignInsuranceEvidence {
+  type: "image" | "document" | "link";
+  url: string;
+  description?: string;
+}
+
+export interface CampaignInsuranceClaim {
+  id: string;
+  campaignId: string;
+  submittedBy: string;
+  submittedAt: number;
+  reason: string;
+  evidence: CampaignInsuranceEvidence[];
+  status: CampaignInsuranceClaimStatus;
+  reviewedBy?: string;
+  reviewedAt?: number;
+  reviewReason?: string;
+  payoutAmount?: string;
+}
+
+export interface CampaignInsuranceClaimInput {
+  reason: string;
+  evidence: CampaignInsuranceEvidence[];
+}
+
 export interface CampaignRecord {
   id: string;
   creator: string;
@@ -103,6 +130,7 @@ export interface CampaignRecord {
   healthAssessment?: CampaignHealthAssessment;
   healthScore?: number;
   healthLevel?: CampaignHealthLevel;
+  insuranceClaim?: CampaignInsuranceClaim;
 }
 
 export interface CampaignCreatorBadge {
@@ -488,6 +516,42 @@ export async function transitionCampaignStatus(
   };
   return dataSource.saveCampaign(next);
 }
+
+export async function submitCampaignInsuranceClaim(
+  campaignId: string,
+  input: CampaignInsuranceClaimInput,
+  submittedBy: string,
+  dataSource = getCampaignDataSource(),
+  now = Date.now(),
+): Promise<CampaignRecord> {
+  const campaign = await getCampaign(campaignId, dataSource);
+  if (!campaign) throw new Error("Campaign not found");
+  if (campaign.status !== "FAILED") throw new Error("Only failed campaigns can submit insurance claims");
+  if (campaign.creator !== submittedBy) throw new Error("Only the campaign creator can submit an insurance claim");
+  if (campaign.insuranceClaim) throw new Error("Insurance claim already submitted for this campaign");
+  if (!input.reason || !input.reason.trim()) throw new Error("Insurance claim reason is required");
+  if (!input.evidence?.length) throw new Error("At least one proof of failure is required");
+  if (!input.evidence.every((evidence) => evidence.url?.trim())) throw new Error("Each proof of failure must include a URL");
+
+  const claim: CampaignInsuranceClaim = {
+    id: `${campaign.id}:claim:${now}`,
+    campaignId: campaign.id,
+    submittedBy,
+    submittedAt: now,
+    reason: input.reason.trim(),
+    evidence: input.evidence.map((evidence) => ({ ...evidence })),
+    status: "PENDING",
+  };
+
+  return dataSource.saveCampaign({
+    ...campaign,
+    insuranceClaim: claim,
+    updatedAt: now,
+  });
+}
+
+export const requestCampaignInsurancePayout = submitCampaignInsuranceClaim;
+export const submitProofOfFailure = submitCampaignInsuranceClaim;
 
 export function csvEscape(value: unknown): string {
   const stringValue = String(value ?? "");
