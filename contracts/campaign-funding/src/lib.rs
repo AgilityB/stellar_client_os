@@ -919,6 +919,152 @@ impl CampaignFundingContract {
     }
 
     // -----------------------------------------------------------------------
+    // Reward streaming
+    // -----------------------------------------------------------------------
+
+    /// Stream a sponsor's reward back to them over 12 months after campaign
+    /// completion.
+    ///
+    /// Instead of a lump-sum distribution at campaign end, sponsors (i.e.
+    /// contributors) receive their reward via a linear payment stream that
+    /// vests continuously over the 12 months following the current ledger
+    /// time.  The campaign contract acts as the stream `sender`, transferring
+    /// the sponsor's pro-rata contribution amount through the configured
+    /// payment-stream contract.
+    ///
+    /// This function is **permissionless** after `claim_funds` has been
+    /// called — anyone may initiate the reward stream for any contributor.
+    /// This ensures sponsors are not dependent on a centralised party to
+    /// trigger their stream.
+    ///
+    /// # How the reward amount is determined
+    ///
+    /// The reward equals the contributor's recorded escrow balance for the
+    /// campaign (`Contribution(campaign_id, contributor)`).  These tokens
+    /// have already been transferred to the contract during `contribute`, so
+    /// the contract holds the funds and can approve a transfer to the stream.
+    ///
+    /// > Note: `claim_funds` sends the *creator's net proceeds* out of the
+    /// > contract, **not** the contributors' balances.  The contributor
+    /// > escrow entries remain intact and are used here.
+    ///
+    /// # Arguments
+    /// * `campaign_id`  — The completed (Claimed) campaign.
+    /// * `contributor`  — Sponsor address to receive the reward stream.
+    ///
+    /// # Returns
+    /// The `u64` stream ID assigned by the payment-stream contract.
+    ///
+    /// # Errors
+    /// * [`Error::CampaignNotFound`]       — no campaign with this ID.
+    /// * [`Error::CampaignNotClaimed`]     — campaign has not yet been claimed
+    ///   by the creator.
+    /// * [`Error::NoContributionFound`]    — contributor has no escrow balance.
+    /// * [`Error::StreamContractNotSet`]   — admin has not called
+    ///   `set_stream_contract`.
+    /// * [`Error::RewardsAlreadyStreamed`]  — a stream was already created for
+    ///   this contributor on this campaign.
+    pub fn stream_sponsor_rewards(
+        env: Env,
+        campaign_id: u64,
+        contributor: Address,
+    ) -> u64 {
+        let campaign = Self::load_campaign(&env, campaign_id);
+
+        // Reward streams are only valid after the creator has claimed funds.
+        if campaign.status != CampaignStatus::Claimed {
+            panic_with_error!(&env, Error::CampaignNotClaimed);
+        }
+
+        // Retrieve the contributor's escrowed balance (reward amount).
+        let contrib_key = DataKey::Contribution(campaign_id, contributor.clone());
+        let reward_amount: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+        if reward_amount <= 0 {
+            panic_with_error!(&env, Error::NoContributionFound);
+        }
+
+        // Guard against duplicate reward streams.
+        let streamed_key = DataKey::RewardStreamed(campaign_id, contributor.clone());
+        if env.storage().persistent().get(&streamed_key).unwrap_or(false) {
+            panic_with_error!(&env, Error::RewardsAlreadyStreamed);
+        }
+
+        // Ensure the stream contract has been configured.
+        let stream_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::StreamContract)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::StreamContractNotSet));
+
+        // Build the 12-month stream window starting now.
+        let start_time: u64 = env.ledger().timestamp();
+        let end_time: u64 = start_time
+            .checked_add(TWELVE_MONTHS_SECS)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+
+        // The campaign contract is the stream sender; it must approve the
+        // payment-stream contract to pull `reward_amount` of the campaign
+        // token.
+        let token_client = token::Client::new(&env, &campaign.token);
+        token_client.approve(
+            &env.current_contract_address(),
+            &stream_contract,
+            &reward_amount,
+            &(env.ledger().sequence() + LEDGER_BUMP),
+        );
+
+        // Cross-contract call: invoke `create_stream` on the payment-stream
+        // contract.  The campaign contract address is the sender so that the
+        // stream contract pulls from this contract's token allowance.
+        let stream_id: u64 = env.invoke_contract(
+            &stream_contract,
+            &Symbol::new(&env, "create_stream"),
+            soroban_sdk::vec![
+                &env,
+                env.current_contract_address().into_val(&env),
+                contributor.clone().into_val(&env),
+                campaign.token.clone().into_val(&env),
+                reward_amount.into_val(&env),
+                0i128.into_val(&env),
+                start_time.into_val(&env),
+                end_time.into_val(&env),
+            ],
+        );
+
+        // Mark the reward as streamed before returning (check-effects).
+        env.storage().persistent().set(&streamed_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&streamed_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        env.events().publish(
+            ("SponsorRewardStreamed", campaign_id),
+            SponsorRewardStreamedEvent {
+                campaign_id,
+                contributor,
+                amount: reward_amount,
+                stream_id,
+                start_time,
+                end_time,
+            },
+        );
+
+        stream_id
+    }
+
+    /// Check whether a reward stream has already been created for a given
+    /// sponsor on a specific campaign.
+    ///
+    /// Returns `true` if `stream_sponsor_rewards` was previously called and
+    /// succeeded for this `(campaign_id, contributor)` pair.
+    pub fn is_reward_streamed(env: Env, campaign_id: u64, contributor: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RewardStreamed(campaign_id, contributor))
+            .unwrap_or(false)
+    }
+
+    // -----------------------------------------------------------------------
     // Queries
     // -----------------------------------------------------------------------
 
@@ -988,6 +1134,11 @@ impl CampaignFundingContract {
             .unwrap()
     }
 
+    /// Return the configured payment-stream contract address, if any.
+    pub fn get_stream_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::StreamContract)
+    }
+
     // -----------------------------------------------------------------------
     // Admin setters
     // -----------------------------------------------------------------------
@@ -1035,6 +1186,27 @@ impl CampaignFundingContract {
         env.storage()
             .instance()
             .extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
+    }
+
+    /// Set the payment-stream contract address used by `stream_sponsor_rewards`.
+    ///
+    /// Requires admin authorisation.  This must be called once after
+    /// deployment to enable the reward-streaming feature.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] — contract not yet initialised.
+    pub fn set_stream_contract(env: Env, stream_contract: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StreamContract, &stream_contract);
+        env.storage().instance().extend_ttl(LEDGER_THRESHOLD, LEDGER_BUMP);
     }
 
     // -----------------------------------------------------------------------
@@ -1127,15 +1299,36 @@ impl CampaignFundingContract {
 
     /// Compute the protocol fee for `amount` using the stored fee rate.
     ///
-    /// Uses the same split-calculation as the payment-stream contract to
-    /// preserve precision without overflow.
+    /// The fee is rounded **up** (ceiling division) so that the full
+    /// fractional entitlement goes to the fee collector rather than being
+    /// silently discarded.  Without ceiling rounding the remainder term
+    /// `(r * rate) / 10_000` (where `r = amount % 10_000`) would floor,
+    /// causing the fee collector to lose up to 1 base-unit per claim while
+    /// the creator keeps the dust instead.
+    ///
+    /// Formula: `ceil(amount * rate / 10_000)`
+    /// Implemented without overflow via the split identity:
+    ///   `amount = q * 10_000 + r`
+    ///   `ceil(r * rate / 10_000) = (r * rate + 9_999) / 10_000`
     fn calculate_fee(env: &Env, amount: i128) -> i128 {
         let fee_rate: u32 = env.storage().instance().get(&DataKey::FeeRate).unwrap_or(0);
         if fee_rate == 0 || amount <= 0 {
             return 0;
         }
         let rate = fee_rate as i128;
-        (amount / 10_000) * rate + ((amount % 10_000) * rate) / 10_000
+        let q = amount / 10_000;
+        let r = amount % 10_000;
+        // Ceiling division for the remainder term: ceil(r * rate / 10_000)
+        let remainder_fee = r
+            .checked_mul(rate)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+            .checked_add(9_999)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+            / 10_000;
+        q.checked_mul(rate)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+            .checked_add(remainder_fee)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
     }
 
     /// Compute the 10% reserve for tree replacement.
@@ -2125,9 +2318,9 @@ mod tests {
         client.trigger_expiry(&id);
         client.claim_funds(&id);
 
-        // fee = 9_999 * 100 / 10_000 = 99 (integer division); net = 9_900.
-        assert_eq!(token_client.balance(&creator), 9_900);
-        assert_eq!(token_client.balance(&fee_collector), 99);
+        // fee = ceil(9_999 * 100 / 10_000) = ceil(99.99) = 100; net = 9_899.
+        assert_eq!(token_client.balance(&creator), 9_899);
+        assert_eq!(token_client.balance(&fee_collector), 100);
     }
 
     // -----------------------------------------------------------------------
