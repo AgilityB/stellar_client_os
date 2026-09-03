@@ -11,6 +11,13 @@ import {
   Edit,
   ShieldCheck,
   MessageSquare,
+  Calendar,
+  Download,
+  Share2,
+  Edit,
+  ShieldCheck,
+  Trophy,
+  BarChart3,
   Globe,
   AlertTriangle,
 } from "lucide-react";
@@ -20,7 +27,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CampaignSponsorWall } from "@/components/modules/campaign/sponsor-wall/CampaignSponsorWall";
 import { CampaignCollaboration } from "@/components/modules/campaign/collaboration/CampaignCollaboration";
 import { CampaignQAModeration } from "@/components/modules/campaign/qa/CampaignQAModeration";
+import { CampaignSeries } from "@/components/modules/campaign/series/CampaignSeries";
+import { CampaignAnalyticsDashboard } from "@/components/modules/campaign/analytics/CampaignAnalyticsDashboard";
 import { BackerCommunity } from "@/components/modules/campaign/community/BackerCommunity";
+import { CampaignFundingVelocityChart } from "@/components/modules/campaign/FundingVelocityChart";
 
 const translations = {
   es: {
@@ -90,6 +100,16 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
     impactStatement: "Permanently offset 150 metric tons of CO2 while securing habitat for 200+ endangered species.",
     beneficiaries: "5,000 local indigenous community members",
     co2OffsetTons: "150",
+    successStory: {
+      headline: "From Rainforest Pledge to On-the-Ground Impact",
+      creatorInterview: "Every XLM stream is tied to verifiable patrol hours and backers receive monthly GPS updates. The team shipped on every promise.",
+      backerTestimonials: [
+        { name: "Marta L.", location: "Lisbon, Portugal", quote: "I could see exactly where my contribution went." },
+        { name: "Devon K.", location: "Austin, TX", quote: "You can tell this is a team that ships." },
+        { name: "Priya N.", location: "Bengaluru, India", quote: "More campaigns should publish stories like this." },
+      ],
+    },
+    treesPlanted: "1,500",
   };
 
   const detectedLang = detectLanguage(campaign.title + campaign.shortDescription + campaign.fullStory);
@@ -98,6 +118,43 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const translation = translationLang ? translations[translationLang] : null;
 
   const progressPct = Math.min(100, Math.round((parseFloat(campaign.raisedAmount) / parseFloat(campaign.goalAmount)) * 100));
+
+  const downloadCertificate = () => {
+    const printWindow = window.open("", "_blank", "width=800,height=600");
+    if (!printWindow) return;
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>Campaign Certificate</title>
+          <style>
+            body { font-family: Georgia, serif; background: #f8f4ea; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+            .certificate { max-width: 680px; background: #fff; border: 8px solid #b45309; padding: 48px 64px; text-align: center; }
+            .certificate h1 { color: #92400e; margin: 0 0 4px; }
+            .subtitle { text-transform: uppercase; color: #78350f; margin-bottom: 16px; font-size: 13px; }
+            .impact { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0; }
+            .impact div { border: 1px solid #e7e5e4; border-radius: 8px; padding: 12px; }
+            .impact strong { display: block; font-size: 20px; color: #166534; }
+          </style>
+        </head>
+        <body>
+          <div class="certificate">
+            <div class="subtitle">Campaign Completion Certificate</div>
+            <h1>${campaign.title}</h1>
+            <p>This certifies the successful completion of the campaign and its verified impact.</p>
+            <div class="impact">
+              <div><strong>${campaign.treesPlanted}</strong>Trees Planted</div>
+              <div><strong>${campaign.co2OffsetTons} tons</strong>CO2 Offset</div>
+              <div><strong>${campaign.raisedAmount} ${campaign.token}</strong>Total Cost</div>
+            </div>
+            <p>Issued for <strong>${campaign.creator}</strong></p>
+          </div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+  };
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl space-y-8">
@@ -111,6 +168,14 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         </Link>
 
         <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={downloadCertificate}
+            className="border-amber-600/40 text-amber-300 hover:bg-amber-950/40 text-xs"
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" /> Download Certificate
+          </Button>
           <Link href="/campaigns/create">
             <Button size="sm" variant="outline" className="border-purple-600/40 text-purple-300 hover:bg-purple-950/40 text-xs">
               <Edit className="mr-1.5 h-3.5 w-3.5" /> Edit Campaign
@@ -237,10 +302,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
-      {/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722) */}
+{/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722, Series, Analytics) */}
       {/* Backer community spaces (#788) render inside the overview sidebar. */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
         <TabsList className="grid w-full grid-cols-4 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
+        <TabsList className="grid w-full grid-cols-5 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
           <TabsTrigger value="overview" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
             <Target className="mr-1.5 h-4 w-4" /> Overview & Story
           </TabsTrigger>
@@ -252,6 +318,13 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </TabsTrigger>
           <TabsTrigger value="qa" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
             <MessageSquare className="mr-1.5 h-4 w-4 text-purple-400" /> Q&A (#791)
+          <TabsTrigger value="success" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
+            <Trophy className="mr-1.5 h-4 w-4 text-amber-400" /> Success Story
+          <TabsTrigger value="series" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
+            <Sparkles className="mr-1.5 h-4 w-4 text-amber-400" /> Series & Sequels
+          </TabsTrigger>
+          <TabsTrigger value="analytics" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
+            <BarChart3 className="mr-1.5 h-4 w-4 text-emerald-400" /> Analytics
           </TabsTrigger>
         </TabsList>
 
@@ -277,7 +350,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                   lang={translationLang || detectedLang}
                   className="text-sm text-amber-200/90 italic bg-amber-950/20 p-4 rounded-lg border border-amber-900/30"
                 >
-                  "{translation?.impactStatement ?? campaign.impactStatement}"
+                  &ldquo;{translation?.impactStatement ?? campaign.impactStatement}&rdquo;
                 </p>
                 <div className="grid grid-cols-2 gap-4 text-xs pt-2">
                   <div>Beneficiaries: <strong className="text-zinc-100">{campaign.beneficiaries}</strong></div>
@@ -287,6 +360,19 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             </div>
 
             <div className="space-y-4">
+              <CampaignFundingVelocityChart
+                data={[
+                  { label: "Mon", raised: 2600 },
+                  { label: "Tue", raised: 3000 },
+                  { label: "Wed", raised: 4200 },
+                  { label: "Thu", raised: 5800 },
+                  { label: "Fri", raised: 7300 },
+                  { label: "Sat", raised: 8100 },
+                  { label: "Sun", raised: 9600 },
+                ]}
+                currency="XLM"
+              />
+
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 space-y-3">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">Campaign Timeline</h4>
                 <div className="text-xs space-y-2">
@@ -319,6 +405,44 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         {/* Tab 4: Q&A Moderation (#791) */}
         <TabsContent value="qa">
           <CampaignQAModeration campaignId={campaign.id} campaignTitle={campaign.title} />
+        {/* Tab 4: Success Story */}
+        <TabsContent value="success" className="space-y-6">
+          <div className="relative overflow-hidden rounded-2xl border border-emerald-800/60 bg-gradient-to-br from-emerald-950/40 via-zinc-900 to-zinc-900 p-6 md:p-8">
+            <div className="flex items-center gap-2">
+              <Badge className="bg-emerald-600 text-white font-semibold text-xs">
+                <Trophy className="mr-1 h-3 w-3" /> Featured Success Story
+              </Badge>
+            </div>
+            <h3 className="text-2xl font-extrabold text-zinc-50 mt-4">{campaign.successStory.headline}</h3>
+            <div className="mt-4 space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+              <p className="text-xs font-bold uppercase tracking-wider text-purple-400">Creator Interview</p>
+              <p className="text-sm text-zinc-300 leading-relaxed">{campaign.successStory.creatorInterview}</p>
+            </div>
+          </div>
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-6 space-y-4">
+            <h4 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+              <Users className="h-4 w-4 text-purple-400" /> Backer Testimonials
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {campaign.successStory.backerTestimonials.map((testimonial) => (
+                <figure key={testimonial.name} className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
+                  <blockquote className="text-sm text-zinc-300 leading-relaxed">"{testimonial.quote}"</blockquote>
+                  <figcaption className="mt-3 text-xs text-zinc-400">
+                    <strong className="text-zinc-200">{testimonial.name}</strong> · {testimonial.location}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </div>
+
+        {/* Tab 4: Series & Sequels */}
+        <TabsContent value="series">
+          <CampaignSeries campaignId={campaign.id} campaignTitle={campaign.title} />
+        </TabsContent>
+
+        {/* Tab 5: Analytics for creators */}
+        <TabsContent value="analytics">
+          <CampaignAnalyticsDashboard campaignId={campaign.id} campaignTitle={campaign.title} />
         </TabsContent>
       </Tabs>
       {showInsuranceModal && (
