@@ -1,3 +1,5 @@
+import { EmailService } from "./email.service";
+
 export type CampaignStatus = "DRAFT" | "PENDING_VERIFICATION" | "ACTIVE" | "PAUSED" | "COMPLETED" | "FAILED";
 
 export type CampaignSortField =
@@ -116,6 +118,7 @@ export interface CampaignInsuranceClaimInput {
 export interface CampaignRecord {
   id: string;
   creator: string;
+  creatorEmail?: string;
   name: string;
   description?: string;
   /** Detected ISO 639-1 language code of the campaign description. */
@@ -346,6 +349,7 @@ export async function getCampaign(campaignId: string, dataSource = getCampaignDa
 export async function createCampaign(input: {
   id?: string;
   creator: string;
+  creatorEmail?: string;
   name: string;
   description?: string;
   location?: string;
@@ -357,6 +361,7 @@ export async function createCampaign(input: {
   const campaign: CampaignRecord = {
     id: input.id ?? crypto.randomUUID(),
     creator: input.creator,
+    creatorEmail: input.creatorEmail,
     name: input.name,
     description: input.description,
     language: detectCampaignLanguage(input.description),
@@ -373,6 +378,7 @@ export async function createCampaign(input: {
     statusChangedAt: now,
     network: input.network,
     sponsors: [],
+    milestonesNotified: [],
     statusHistory: [{
       id: `${input.id ?? "campaign"}:${now}:0`,
       campaignId: input.id ?? "",
