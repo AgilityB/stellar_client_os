@@ -12,6 +12,7 @@ import {
   Share2,
   Edit,
   ShieldCheck,
+  BarChart3,
   Globe,
   AlertTriangle,
 } from "lucide-react";
@@ -20,6 +21,8 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CampaignSponsorWall } from "@/components/modules/campaign/sponsor-wall/CampaignSponsorWall";
 import { CampaignCollaboration } from "@/components/modules/campaign/collaboration/CampaignCollaboration";
+import { CampaignSeries } from "@/components/modules/campaign/series/CampaignSeries";
+import { CampaignAnalyticsDashboard } from "@/components/modules/campaign/analytics/CampaignAnalyticsDashboard";
 import { BackerCommunity } from "@/components/modules/campaign/community/BackerCommunity";
 
 const translations = {
@@ -237,10 +240,10 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
-      {/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722) */}
+{/* Main Content Tabs (Overview, Sponsor Wall #724, Co-Creators #722, Series, Analytics) */}
       {/* Backer community spaces (#788) render inside the overview sidebar. */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
-        <TabsList className="grid w-full grid-cols-3 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
+        <TabsList className="grid w-full grid-cols-5 bg-zinc-900 border border-zinc-800 p-1 rounded-xl">
           <TabsTrigger value="overview" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
             <Target className="mr-1.5 h-4 w-4" /> Overview & Story
           </TabsTrigger>
@@ -249,6 +252,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
           </TabsTrigger>
           <TabsTrigger value="collaboration" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
             <Users className="mr-1.5 h-4 w-4 text-purple-400" /> Co-Creators (#722)
+          </TabsTrigger>
+          <TabsTrigger value="series" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
+            <Sparkles className="mr-1.5 h-4 w-4 text-amber-400" /> Series & Sequels
+          </TabsTrigger>
+          <TabsTrigger value="analytics" className="text-xs font-semibold data-[state=active]:bg-purple-600 data-[state=active]:text-white">
+            <BarChart3 className="mr-1.5 h-4 w-4 text-emerald-400" /> Analytics
           </TabsTrigger>
         </TabsList>
 
@@ -311,6 +320,16 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
         {/* Tab 3: Co-Creators Collaboration (#722) */}
         <TabsContent value="collaboration">
           <CampaignCollaboration campaignId={campaign.id} campaignTitle={campaign.title} />
+        </TabsContent>
+
+        {/* Tab 4: Series & Sequels */}
+        <TabsContent value="series">
+          <CampaignSeries campaignId={campaign.id} campaignTitle={campaign.title} />
+        </TabsContent>
+
+        {/* Tab 5: Analytics for creators */}
+        <TabsContent value="analytics">
+          <CampaignAnalyticsDashboard campaignId={campaign.id} campaignTitle={campaign.title} />
         </TabsContent>
       </Tabs>
       {showInsuranceModal && (
