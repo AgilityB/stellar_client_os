@@ -26,6 +26,7 @@ import { CampaignCollaboration } from "@/components/modules/campaign/collaborati
 import { CampaignSeries } from "@/components/modules/campaign/series/CampaignSeries";
 import { CampaignAnalyticsDashboard } from "@/components/modules/campaign/analytics/CampaignAnalyticsDashboard";
 import { BackerCommunity } from "@/components/modules/campaign/community/BackerCommunity";
+import { CampaignFundingVelocityChart } from "@/components/modules/campaign/FundingVelocityChart";
 
 const translations = {
   es: {
@@ -343,7 +344,7 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
                   lang={translationLang || detectedLang}
                   className="text-sm text-amber-200/90 italic bg-amber-950/20 p-4 rounded-lg border border-amber-900/30"
                 >
-                  "{translation?.impactStatement ?? campaign.impactStatement}"
+                  &ldquo;{translation?.impactStatement ?? campaign.impactStatement}&rdquo;
                 </p>
                 <div className="grid grid-cols-2 gap-4 text-xs pt-2">
                   <div>Beneficiaries: <strong className="text-zinc-100">{campaign.beneficiaries}</strong></div>
@@ -353,6 +354,19 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
             </div>
 
             <div className="space-y-4">
+              <CampaignFundingVelocityChart
+                data={[
+                  { label: "Mon", raised: 2600 },
+                  { label: "Tue", raised: 3000 },
+                  { label: "Wed", raised: 4200 },
+                  { label: "Thu", raised: 5800 },
+                  { label: "Fri", raised: 7300 },
+                  { label: "Sat", raised: 8100 },
+                  { label: "Sun", raised: 9600 },
+                ]}
+                currency="XLM"
+              />
+
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 space-y-3">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-purple-400">Campaign Timeline</h4>
                 <div className="text-xs space-y-2">

@@ -79,7 +79,7 @@ export function TokenBalance({
     const timeoutId = setTimeout(() => {
       setImageTimedOut(true);
       setImageError(true);
-    }, 15000); // 15 second timeout for slow 3G connections
+    }, 15000);
 
     return () => clearTimeout(timeoutId);
   }, [iconUrl]);
@@ -94,7 +94,6 @@ export function TokenBalance({
 
   return (
     <div key={resetKey} className="flex items-center gap-4 p-4 bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-600 transition-colors">
-      {/* Token Icon */}
       <div className="shrink-0 w-10 h-10 rounded-full bg-white flex items-center justify-center overflow-hidden p-1.5 relative">
         {iconUrl && !imageError ? (
           <Image
@@ -104,7 +103,7 @@ export function TokenBalance({
             height={40}
             className="w-full h-full object-contain"
             onError={() => setImageError(true)}
-            unoptimized // Required for external images without domain configuration
+            unoptimized
           />
         ) : (
           <span className="text-lg font-bold text-violet-400">
@@ -122,7 +121,6 @@ export function TokenBalance({
         )}
       </div>
 
-      {/* Token Information */}
       <div className="flex-1 min-w-0">
         <div className="font-semibold text-zinc-50 text-base">{assetCode}</div>
         {assetIssuer && (
@@ -133,7 +131,6 @@ export function TokenBalance({
         )}
       </div>
 
-      {/* Balance Amount */}
       <div className="shrink-0 text-right">
         <div className="font-semibold text-lg text-violet-400">
           {formattedBalance}
