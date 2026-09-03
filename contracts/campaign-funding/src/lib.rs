@@ -42,7 +42,8 @@ pub enum DataKey {
     /// Full [`Campaign`] struct keyed by campaign ID (persistent storage).
     Campaign(u64),
     /// Per-contributor escrow balance keyed by `(campaign_id, contributor)`
-    /// (persistent storage).
+    /// (persistent storage). This remains the sponsor's gross contribution,
+    /// independent of protocol fees and matching funds.
     Contribution(u64, Address),
     /// Bitmask of campaign goal milestones (25 %, 50 %, 75 %, 100 %) that
     /// have been reached so far, keyed by campaign ID (persistent storage).
@@ -684,18 +685,37 @@ impl CampaignFundingContract {
         let token_client = token::Client::new(&env, &campaign.token);
         token_client.transfer(&contributor, &env.current_contract_address(), &amount);
 
-        // Update per-contributor balance.
+        // Update per-contributor balance. This is always the sponsor's gross
+        // amount, so a later refund returns the original contribution rather
+        // than any fee-adjusted net amount.
         let contrib_key = DataKey::Contribution(campaign_id, contributor.clone());
         let prev: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
         let new_contrib = prev
             .checked_add(amount)
             .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
         env.storage().persistent().set(&contrib_key, &new_contrib);
-        env.storage()
-            .persistent()
-            .extend_ttl(&contrib_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        // Keep the gross sponsor amount separate from any future fee or
+        // matching accounting so refunds always return the original deposit.
+        let original_key = DataKey::OriginalContribution(campaign_id, contributor.clone());
+        let original = prev.checked_add(amount).unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+        env.storage().persistent().set(&original_key, &original);
+        env.storage().persistent().extend_ttl(&contrib_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        env.storage().persistent().extend_ttl(&original_key, LEDGER_THRESHOLD, LEDGER_BUMP);
 
-        campaign.total_raised = new_total;
+        // Apply available admin-funded matching dollar-for-dollar. Matching
+        // is bounded by both the remaining campaign target and its budget.
+        let matching_cap: i128 = env.storage().persistent().get(&DataKey::MatchingCap(campaign_id)).unwrap_or(0);
+        let matching_used: i128 = env.storage().persistent().get(&DataKey::MatchingUsed(campaign_id)).unwrap_or(0);
+        let matching_balance: i128 = env.storage().persistent().get(&DataKey::MatchingBalance(campaign_id)).unwrap_or(0);
+        let remaining_budget = matching_cap.saturating_sub(matching_used);
+        let remaining_target = campaign.target_amount.saturating_sub(new_total);
+        let matched = amount.min(remaining_budget).min(matching_balance).min(remaining_target);
+        if matched > 0 {
+            let updated_matching = matching_used.checked_add(matched).unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
+            env.storage().persistent().set(&DataKey::MatchingUsed(campaign_id), &updated_matching);
+            env.storage().persistent().set(&DataKey::MatchingBalance(campaign_id), &(matching_balance - matched));
+        }
+        campaign.total_raised = new_total.checked_add(matched).unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow));
 
         // Auto-succeed when the hard cap is reached.
         if campaign.total_raised >= campaign.target_amount {
@@ -960,7 +980,13 @@ impl CampaignFundingContract {
         }
 
         let contrib_key = DataKey::Contribution(campaign_id, contributor.clone());
-        let amount: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+        // Prefer the gross ledger. The fallback lets pre-upgrade records
+        // continue to refund correctly because Contribution was historically
+        // the gross sponsor amount.
+        let original_key = DataKey::OriginalContribution(campaign_id, contributor.clone());
+        let amount: i128 = env.storage().persistent().get(&original_key)
+            .or_else(|| env.storage().persistent().get(&contrib_key))
+            .unwrap_or(0);
 
         if amount <= 0 {
             panic_with_error!(&env, Error::NoContributionFound);
@@ -968,6 +994,7 @@ impl CampaignFundingContract {
 
         // Clear before transferring (check-effects-interactions).
         env.storage().persistent().remove(&contrib_key);
+        env.storage().persistent().remove(&original_key);
 
         let token_client = token::Client::new(&env, &campaign.token);
         token_client.transfer(&env.current_contract_address(), &contributor, &amount);
